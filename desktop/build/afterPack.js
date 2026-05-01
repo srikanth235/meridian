@@ -1,6 +1,11 @@
 // Strip non-English Chromium locale .pak files from the packaged .app.
 // electron-builder's `electronLanguages` config is unreliable for macOS, so
 // we delete the unwanted .lproj directories ourselves. Saves ~40 MB.
+//
+// Note: build/icon.png and build/icon.icns are rasterized from build/icon.svg
+// using macOS's WebKit-backed `qlmanage` (ImageMagick's SVG renderer drops
+// `<g>` stroke inheritance and produces an all-black image). To regenerate
+// after editing icon.svg, see desktop/build/regenerate-icon.sh.
 
 const fs = require('node:fs');
 const path = require('node:path');
