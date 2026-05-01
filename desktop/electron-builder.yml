@@ -8,10 +8,13 @@ files:
   - preload.js
   - package.json
 extraResources:
-  # Ship the meridian Rust binary alongside the app and bundle the default
-  # WORKFLOW.md so first-run can scaffold ~/Library/Application Support/Meridian.
+  # Ship the meridian Rust binary alongside the app, the bundled React UI,
+  # and the default WORKFLOW.md so first-run can scaffold
+  # ~/Library/Application Support/Meridian.
   - from: "../target/release/meridian"
     to: "bin/meridian"
+  - from: "../frontend/dist"
+    to: "frontend"
   - from: "../WORKFLOW.md"
     to: "WORKFLOW.md"
 mac:

@@ -49,6 +49,16 @@ function resolveDaemonBinary() {
   );
 }
 
+function resolveStaticDir() {
+  if (process.env.MERIDIAN_STATIC_DIR && fs.existsSync(process.env.MERIDIAN_STATIC_DIR)) {
+    return process.env.MERIDIAN_STATIC_DIR;
+  }
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'frontend');
+  }
+  return path.join(REPO_ROOT, 'frontend', 'dist');
+}
+
 function resolveWorkflowPath() {
   if (process.env.MERIDIAN_WORKFLOW && fs.existsSync(process.env.MERIDIAN_WORKFLOW)) {
     return process.env.MERIDIAN_WORKFLOW;
@@ -121,17 +131,23 @@ function waitForHealth(port, timeoutMs = 15000) {
 
 // ----- daemon process -------------------------------------------------------
 
-function spawnDaemon(port, workflowPath) {
+function spawnDaemon(port, workflowPath, staticDir) {
   const binary = resolveDaemonBinary();
-  console.log(`[meridian] spawning ${binary} --port ${port} --workflow ${workflowPath}`);
-  const child = spawn(
-    binary,
-    ['--workflow', workflowPath, '--port', String(port), '--host', '127.0.0.1'],
-    {
-      env: { ...process.env, RUST_LOG: process.env.RUST_LOG || 'info' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }
-  );
+  const args = [
+    '--workflow', workflowPath,
+    '--port', String(port),
+    '--host', '127.0.0.1',
+  ];
+  if (staticDir && fs.existsSync(staticDir)) {
+    args.push('--static-dir', staticDir);
+  } else {
+    console.warn(`[meridian] static dir missing (${staticDir}); UI will be blank`);
+  }
+  console.log(`[meridian] spawning ${binary} ${args.join(' ')}`);
+  const child = spawn(binary, args, {
+    env: { ...process.env, RUST_LOG: process.env.RUST_LOG || 'info' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   child.stdout.on('data', (d) => process.stdout.write(`[meridian] ${d}`));
   child.stderr.on('data', (d) => process.stderr.write(`[meridian] ${d}`));
   child.on('exit', (code, signal) => {
@@ -236,11 +252,12 @@ function buildMenu() {
 // ----- lifecycle ------------------------------------------------------------
 
 async function startup() {
-  let port, workflow;
+  let port, workflow, staticDir;
   try {
     port = await findFreePort();
     workflow = resolveWorkflowPath();
-    daemonProc = spawnDaemon(port, workflow);
+    staticDir = resolveStaticDir();
+    daemonProc = spawnDaemon(port, workflow, staticDir);
     await waitForHealth(port);
   } catch (e) {
     console.error('[meridian] startup failed:', e);
