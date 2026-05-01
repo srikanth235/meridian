@@ -187,6 +187,7 @@ function createWindow(daemonPort) {
     backgroundColor: '#0b0d10',
     titleBarStyle: 'hiddenInset',
     title: 'Meridian',
+    icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

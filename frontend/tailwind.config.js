@@ -7,7 +7,7 @@ export default {
         bg: "#0b0d10",
         panel: "#13171c",
         border: "#222831",
-        accent: "#7dd3fc",
+        accent: "#7c3aed",
         ok: "#34d399",
         warn: "#fbbf24",
         err: "#f87171",
