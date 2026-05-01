@@ -26,3 +26,7 @@ mac:
         - arm64
   hardenedRuntime: false
   gatekeeperAssess: false
+# Drop the 50+ non-English Chromium locale .pak files via an afterPack
+# script (electron-builder's `electronLanguages` field is unreliable on
+# macOS for v25.x). Saves ~40 MB.
+afterPack: ./build/afterPack.js

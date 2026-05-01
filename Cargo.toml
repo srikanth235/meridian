@@ -54,5 +54,7 @@ meridian-server = { path = "crates/meridian-server" }
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
+strip = "symbols"
+panic = "abort"
