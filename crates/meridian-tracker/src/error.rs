@@ -4,18 +4,16 @@ use thiserror::Error;
 pub enum TrackerError {
     #[error("unsupported tracker kind: {0}")]
     UnsupportedTrackerKind(String),
-    #[error("missing tracker api_key")]
-    MissingApiKey,
-    #[error("missing tracker project_slug")]
-    MissingProjectSlug,
-    #[error("linear request failed: {0}")]
-    LinearApiRequest(String),
-    #[error("linear non-2xx status {status}: {body}")]
-    LinearApiStatus { status: u16, body: String },
-    #[error("linear graphql errors: {0}")]
-    LinearGraphqlErrors(String),
-    #[error("linear payload missing data")]
-    LinearUnknownPayload,
-    #[error("linear pagination missing endCursor")]
-    LinearMissingEndCursor,
+    #[error("tracker.repo is required (\"owner/name\")")]
+    MissingRepo,
+    #[error("tracker.repo is not in \"owner/name\" form: {0}")]
+    InvalidRepo(String),
+    #[error("failed to spawn `gh`: {0}")]
+    GhSpawn(String),
+    #[error("`gh` timed out")]
+    GhTimeout,
+    #[error("`gh` exited with code {code}: {stderr}")]
+    GhExit { code: i32, stderr: String },
+    #[error("`gh` returned bad output: {0}")]
+    GhBadOutput(String),
 }

@@ -1,8 +1,8 @@
-//! Issue tracker abstraction + Linear adapter (spec §11).
+//! Issue tracker abstraction + GitHub adapter (spec §11).
 pub mod error;
-pub mod linear;
+pub mod github;
 pub mod tracker;
 
 pub use error::TrackerError;
-pub use linear::LinearTracker;
+pub use github::GithubTracker;
 pub use tracker::Tracker;

@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 use crate::error::ConfigError;
 
-const DEFAULT_LINEAR_ENDPOINT: &str = "https://api.linear.app/graphql";
 const DEFAULT_POLL_INTERVAL_MS: u64 = 30_000;
 const DEFAULT_HOOK_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_MAX_CONCURRENT_AGENTS: u32 = 10;
@@ -36,11 +35,19 @@ pub struct ServiceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackerConfig {
     pub kind: String,
-    pub endpoint: String,
-    pub api_key: Option<String>,
-    pub project_slug: Option<String>,
+    /// `owner/name` for GitHub.
+    pub repo: Option<String>,
+    /// Issue states the orchestrator dispatches on. For `kind: github` these
+    /// are label names like `status:todo` (case-insensitive) plus the special
+    /// token `open` for label-less open issues.
     pub active_states: Vec<String>,
+    /// Terminal states (cancel running workers, drop from kanban active set).
+    /// For GitHub, `closed` is the natural terminal token.
     pub terminal_states: Vec<String>,
+    /// Optional explicit column ordering for the UI. If empty, columns are
+    /// `active_states ++ terminal_states` in declaration order.
+    #[serde(default)]
+    pub columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,19 +121,12 @@ impl ServiceConfig {
         let tracker_obj = obj(&root, "tracker");
         let tracker_kind = string(&tracker_obj, "kind").unwrap_or_default();
         let tracker = TrackerConfig {
-            endpoint: string(&tracker_obj, "endpoint").unwrap_or_else(|| {
-                if tracker_kind == "linear" {
-                    DEFAULT_LINEAR_ENDPOINT.to_string()
-                } else {
-                    String::new()
-                }
-            }),
-            api_key: string(&tracker_obj, "api_key").and_then(resolve_env),
-            project_slug: string(&tracker_obj, "project_slug"),
+            repo: string(&tracker_obj, "repo"),
             active_states: string_list(&tracker_obj, "active_states")
                 .unwrap_or_else(default_active_states),
             terminal_states: string_list(&tracker_obj, "terminal_states")
                 .unwrap_or_else(default_terminal_states),
+            columns: string_list(&tracker_obj, "columns").unwrap_or_default(),
             kind: tracker_kind,
         };
 
@@ -231,32 +231,22 @@ impl ServiceConfig {
                 "tracker.kind is required".into(),
             ));
         }
-        if self.tracker.kind == "linear" {
-            if self
+        if self.tracker.kind == "github" {
+            let repo = self
                 .tracker
-                .api_key
+                .repo
                 .as_deref()
-                .map(|s| s.is_empty())
-                .unwrap_or(true)
-            {
-                return Err(ConfigError::PreflightFailed(
-                    "tracker.api_key is required for linear (set LINEAR_API_KEY)".into(),
-                ));
-            }
-            if self
-                .tracker
-                .project_slug
-                .as_deref()
-                .map(|s| s.is_empty())
-                .unwrap_or(true)
-            {
-                return Err(ConfigError::PreflightFailed(
-                    "tracker.project_slug is required for linear".into(),
-                ));
+                .ok_or_else(|| ConfigError::PreflightFailed(
+                    "tracker.repo is required for github (\"owner/name\")".into(),
+                ))?;
+            if !repo.contains('/') {
+                return Err(ConfigError::PreflightFailed(format!(
+                    "tracker.repo must be \"owner/name\", got {repo:?}"
+                )));
             }
         } else {
             return Err(ConfigError::PreflightFailed(format!(
-                "unsupported tracker.kind: {}",
+                "unsupported tracker.kind: {} (only \"github\" is supported)",
                 self.tracker.kind
             )));
         }
@@ -266,6 +256,26 @@ impl ServiceConfig {
             ));
         }
         Ok(())
+    }
+
+    /// Effective kanban column ordering: explicit `tracker.columns`, else
+    /// `active_states ++ terminal_states` minus duplicates.
+    pub fn kanban_columns(&self) -> Vec<String> {
+        if !self.tracker.columns.is_empty() {
+            return self.tracker.columns.clone();
+        }
+        let mut out = Vec::new();
+        for s in self
+            .tracker
+            .active_states
+            .iter()
+            .chain(self.tracker.terminal_states.iter())
+        {
+            if !out.iter().any(|x: &String| x.eq_ignore_ascii_case(s)) {
+                out.push(s.clone());
+            }
+        }
+        out
     }
 }
 
@@ -325,21 +335,6 @@ fn parse_state_map(
     out
 }
 
-/// Resolve `$VAR_NAME` env indirection. Empty resolved values are treated as
-/// missing (spec §5.3.1).
-fn resolve_env(value: String) -> Option<String> {
-    if let Some(name) = value.strip_prefix('$') {
-        match std::env::var(name) {
-            Ok(v) if !v.is_empty() => Some(v),
-            _ => None,
-        }
-    } else if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
 /// Expand `~`, `$VAR` for path-like values. Bare strings without separators are
 /// kept as-is per spec §5.3.3.
 fn expand_path(input: &str) -> PathBuf {
@@ -366,17 +361,11 @@ fn default_workspace_root() -> PathBuf {
 }
 
 fn default_active_states() -> Vec<String> {
-    vec!["Todo".into(), "In Progress".into()]
+    vec!["status:todo".into(), "status:in-progress".into()]
 }
 
 fn default_terminal_states() -> Vec<String> {
-    vec![
-        "Closed".into(),
-        "Cancelled".into(),
-        "Canceled".into(),
-        "Duplicate".into(),
-        "Done".into(),
-    ]
+    vec!["closed".into()]
 }
 
 fn default_turn_sandbox_policy() -> Value {
@@ -400,26 +389,56 @@ mod tests {
     }
 
     #[test]
-    fn linear_endpoint_default() {
-        let cfg = ServiceConfig::from_raw(&json!({"tracker": {"kind": "linear"}}));
-        assert_eq!(cfg.tracker.endpoint, DEFAULT_LINEAR_ENDPOINT);
+    fn preflight_requires_github_repo() {
+        let cfg = ServiceConfig::from_raw(&json!({"tracker": {"kind": "github"}}));
+        assert!(cfg.preflight().is_err());
     }
 
     #[test]
-    fn preflight_requires_linear_keys() {
+    fn preflight_rejects_malformed_repo() {
+        let cfg = ServiceConfig::from_raw(&json!({
+            "tracker": {"kind": "github", "repo": "no-slash"}
+        }));
+        assert!(cfg.preflight().is_err());
+    }
+
+    #[test]
+    fn preflight_passes_for_valid_github() {
+        let cfg = ServiceConfig::from_raw(&json!({
+            "tracker": {"kind": "github", "repo": "owner/name"}
+        }));
+        assert!(cfg.preflight().is_ok());
+    }
+
+    #[test]
+    fn rejects_unsupported_kind() {
         let cfg = ServiceConfig::from_raw(&json!({"tracker": {"kind": "linear"}}));
         assert!(cfg.preflight().is_err());
     }
 
     #[test]
-    fn env_indirection_resolves() {
-        std::env::set_var("__SYM_TEST_KEY", "abc");
+    fn kanban_columns_default_to_active_then_terminal() {
         let cfg = ServiceConfig::from_raw(&json!({
-            "tracker": {"kind": "linear", "api_key": "$__SYM_TEST_KEY", "project_slug": "p"}
+            "tracker": {
+                "kind": "github", "repo": "o/r",
+                "active_states": ["status:todo", "status:in-progress"],
+                "terminal_states": ["closed"],
+            }
         }));
-        assert_eq!(cfg.tracker.api_key.as_deref(), Some("abc"));
-        assert!(cfg.preflight().is_ok());
-        std::env::remove_var("__SYM_TEST_KEY");
+        assert_eq!(cfg.kanban_columns(),
+            vec!["status:todo".to_string(), "status:in-progress".into(), "closed".into()]);
+    }
+
+    #[test]
+    fn kanban_columns_explicit_override() {
+        let cfg = ServiceConfig::from_raw(&json!({
+            "tracker": {
+                "kind": "github", "repo": "o/r",
+                "columns": ["status:todo", "status:done"],
+            }
+        }));
+        assert_eq!(cfg.kanban_columns(),
+            vec!["status:todo".to_string(), "status:done".into()]);
     }
 
     #[test]

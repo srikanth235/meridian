@@ -1,16 +1,21 @@
 ---
 tracker:
-  kind: linear
-  api_key: $LINEAR_API_KEY
-  project_slug: 3b5400401c46
+  kind: github
+  repo: srikanth235/meridian
+  # `status:*` labels become kanban columns. `closed` is the special token
+  # for the GitHub Closed state.
   active_states:
-    - Todo
-    - In Progress
+    - status:todo
+    - status:in-progress
+    - status:in-review
   terminal_states:
-    - Done
-    - Cancelled
-    - Closed
-    - Duplicate
+    - closed
+  # Optional: explicit column ordering (otherwise active ++ terminal).
+  # columns:
+  #   - status:todo
+  #   - status:in-progress
+  #   - status:in-review
+  #   - closed
 
 polling:
   interval_ms: 30000
@@ -25,20 +30,11 @@ agent:
 
 codex:
   command: codex app-server
-  # AskForApproval enum: untrusted | on-failure | on-request | never
   approval_policy: never
-  # SandboxMode enum: read-only | workspace-write | danger-full-access
   thread_sandbox: danger-full-access
-  # SandboxPolicy object form. Other variants:
-  #   {type: readOnly, networkAccess: false}
-  #   {type: workspaceWrite, networkAccess: false}
-  #   {type: externalSandbox, networkAccess: restricted}
   turn_sandbox_policy:
     type: dangerFullAccess
   turn_timeout_ms: 3600000
-  # Wait this long for thread/start and turn/start ack. Codex may warm up
-  # MCP servers before responding; meridian auto-relaxes this to 30s for
-  # those two methods, but other RPCs use this value.
   read_timeout_ms: 5000
   stall_timeout_ms: 300000
 
@@ -53,7 +49,7 @@ hooks:
   #   git fetch origin && git checkout main && git pull --ff-only
 ---
 
-You are the Meridian agent working on Linear issue **{{ issue.identifier }}**: {{ issue.title }}.
+You are the Meridian agent working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}.
 
 {% if issue.description %}
 ## Description
@@ -72,34 +68,28 @@ You are the Meridian agent working on Linear issue **{{ issue.identifier }}**: {
 ## Your task
 
 1. Read the issue carefully and form a plan.
-2. Make the code changes needed in this workspace directory (your `cwd`).
-3. Run any tests / type-check / linter that make sense.
-4. When the work is complete, transition the Linear issue to **Done**.
+2. Move the issue into the In-Progress column:
 
-## Closing the issue in Linear
+   ```bash
+   gh issue edit {{ issue.id }} \
+     --add-label "status:in-progress" \
+     --remove-label "status:todo"
+   ```
+3. Make the code changes needed in this workspace directory (your `cwd`).
+4. Run any tests / type-check / linter that make sense.
+5. When the work is complete, close the issue:
 
-When you finish, close out the issue with a single GraphQL call. The `LINEAR_API_KEY`
-environment variable is already set for you.
+   ```bash
+   gh issue close {{ issue.id }} \
+     --comment "Completed by Meridian agent. Workspace: $(pwd)" \
+     --reason completed
+   ```
+
+If you are blocked and cannot complete the issue, post a comment instead and stop:
 
 ```bash
-curl -sS https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d @- <<'JSON'
-{
-  "query": "mutation($id: String!, $stateId: String!, $body: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } commentCreate(input: { issueId: $id, body: $body }) { success } }",
-  "variables": {
-    "id": "{{ issue.id }}",
-    "stateId": "83bee53a-5f89-4b40-b016-6df022c3bfc4",
-    "body": "Completed by Meridian agent. Workspace: $(pwd)"
-  }
-}
-JSON
+gh issue comment {{ issue.id }} --body "Blocked: <reason>"
 ```
 
-The `stateId` above is the **Done** state for the `Testing235` team. If you are blocked
-and cannot complete the issue, instead post a comment explaining the blocker (use
-`commentCreate` only) and stop without changing state.
-
-Stay inside this workspace directory. Do not ask interactive questions — there is no
-human in the loop.
+The `gh` CLI is already authenticated for you. Stay inside this workspace
+directory and do not ask interactive questions — there is no human in the loop.

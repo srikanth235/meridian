@@ -94,9 +94,9 @@ mod tests {
 
     #[test]
     fn parses_front_matter() {
-        let src = "---\ntracker:\n  kind: linear\n---\nHello {{ issue.identifier }}";
+        let src = "---\ntracker:\n  kind: github\n  repo: o/r\n---\nHello {{ issue.identifier }}";
         let wf = parse_workflow(&PathBuf::from("WORKFLOW.md"), src).unwrap();
-        assert_eq!(wf.config.tracker.kind, "linear");
+        assert_eq!(wf.config.tracker.kind, "github");
         assert_eq!(wf.prompt_template, "Hello {{ issue.identifier }}");
     }
 

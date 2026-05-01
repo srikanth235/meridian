@@ -42,6 +42,17 @@ export interface TotalsRow {
   seconds_running: number;
 }
 
+export interface KanbanColumn {
+  state: string;
+  issues: Issue[];
+}
+
+export interface KanbanBoard {
+  columns: KanbanColumn[];
+  unsorted: Issue[];
+  loaded: boolean;
+}
+
 export interface Snapshot {
   running: RunningRow[];
   retrying: RetryRow[];
@@ -50,6 +61,8 @@ export interface Snapshot {
   generated_at: string;
   poll_interval_ms: number;
   max_concurrent_agents: number;
+  kanban: KanbanBoard;
+  repo: string | null;
 }
 
 export interface WorkflowResponse {

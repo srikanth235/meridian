@@ -4,7 +4,7 @@ use meridian_core::Issue;
 
 use crate::error::ConfigError;
 
-const FALLBACK_PROMPT: &str = "You are working on an issue from Linear.";
+const FALLBACK_PROMPT: &str = "You are working on a GitHub issue.";
 
 /// Render the workflow prompt template with strict checking (spec §12.2).
 /// Empty templates fall back to a minimal default per spec §5.4.

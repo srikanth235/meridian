@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use meridian_config::{load_workflow, WorkflowWatcher};
 use meridian_orchestrator::Orchestrator;
-use meridian_tracker::{LinearTracker, Tracker};
+use meridian_tracker::{GithubTracker, Tracker};
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     // Keep watcher alive for the whole process.
     Box::leak(Box::new(watcher));
 
-    let tracker: Arc<dyn Tracker> = Arc::new(LinearTracker::from_config(&initial.config.tracker)?);
+    let tracker: Arc<dyn Tracker> = Arc::new(GithubTracker::from_config(&initial.config.tracker)?);
 
     let orch = Orchestrator::new(tracker, workflow.clone());
     let handle = orch.handle();

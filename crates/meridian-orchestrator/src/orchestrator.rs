@@ -14,7 +14,7 @@ use meridian_workspace::WorkspaceManager;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use crate::snapshot::{RetryRow, RunningRow, Snapshot, TotalsRow};
+use crate::snapshot::{KanbanBoard, KanbanColumn, RetryRow, RunningRow, Snapshot, TotalsRow};
 
 const CONTINUATION_DELAY_MS: u64 = 1_000;
 const FAILURE_BASE_DELAY_MS: u64 = 10_000;
@@ -55,6 +55,8 @@ struct OrchestratorInner {
     tracker: Arc<dyn Tracker>,
     workflow: ReloadHandle,
     events: broadcast::Sender<SnapshotEvent>,
+    /// Latest tracker fetch, partitioned for the kanban UI.
+    board: Mutex<KanbanBoard>,
 }
 
 impl Orchestrator {
@@ -77,6 +79,7 @@ impl Orchestrator {
             tracker,
             workflow,
             events: tx,
+            board: Mutex::new(KanbanBoard::default()),
         });
         Self { inner }
     }
@@ -148,17 +151,35 @@ impl OrchestratorInner {
             return;
         }
 
-        let candidates = match self
-            .tracker
-            .fetch_issues_by_states(&cfg.tracker.active_states)
-            .await
-        {
+        // Fetch the union of active + terminal states once per tick: dispatch
+        // works off the active subset, the kanban UI gets the whole board.
+        let mut wanted: Vec<String> = cfg.tracker.active_states.clone();
+        for s in &cfg.tracker.terminal_states {
+            if !wanted.iter().any(|w| w.eq_ignore_ascii_case(s)) {
+                wanted.push(s.clone());
+            }
+        }
+        let all_issues = match self.tracker.fetch_issues_by_states(&wanted).await {
             Ok(c) => c,
             Err(e) => {
-                warn!(error = %e, "candidate fetch failed; skipping dispatch this tick");
+                warn!(error = %e, "tracker fetch failed; skipping dispatch this tick");
                 return;
             }
         };
+
+        let board = build_board(&cfg, &all_issues);
+        *self.board.lock() = board;
+
+        let active_lc: Vec<String> = cfg
+            .tracker
+            .active_states
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+        let candidates: Vec<Issue> = all_issues
+            .into_iter()
+            .filter(|i| active_lc.iter().any(|s| s == &i.state.to_lowercase()))
+            .collect();
 
         let chosen = self.select_dispatchable(&cfg, candidates);
         for issue in chosen {
@@ -715,6 +736,8 @@ impl OrchestratorInner {
                 .ended_seconds_running
                 .saturating_add(live_seconds),
         };
+        let kanban = self.board.lock().clone();
+        let repo = self.workflow.current().config.tracker.repo.clone();
         Snapshot {
             running,
             retrying,
@@ -723,7 +746,39 @@ impl OrchestratorInner {
             generated_at: now,
             poll_interval_ms: s.poll_interval_ms,
             max_concurrent_agents: s.max_concurrent_agents,
+            kanban,
+            repo,
         }
+    }
+}
+
+fn build_board(cfg: &ServiceConfig, issues: &[Issue]) -> KanbanBoard {
+    let columns_cfg = cfg.kanban_columns();
+    let mut by_state: HashMap<String, Vec<Issue>> = HashMap::new();
+    let mut unsorted = Vec::new();
+    'outer: for issue in issues {
+        let s_lc = issue.state.to_lowercase();
+        for col in &columns_cfg {
+            if col.eq_ignore_ascii_case(&s_lc) {
+                by_state.entry(col.clone()).or_default().push(issue.clone());
+                continue 'outer;
+            }
+        }
+        unsorted.push(issue.clone());
+    }
+    let columns: Vec<KanbanColumn> = columns_cfg
+        .into_iter()
+        .map(|state| {
+            let mut issues = by_state.remove(&state).unwrap_or_default();
+            // Newest first within a column.
+            issues.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            KanbanColumn { state, issues }
+        })
+        .collect();
+    KanbanBoard {
+        columns,
+        unsorted,
+        loaded: true,
     }
 }
 

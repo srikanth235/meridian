@@ -13,6 +13,31 @@ pub struct Snapshot {
     pub generated_at: DateTime<Utc>,
     pub poll_interval_ms: u64,
     pub max_concurrent_agents: u32,
+    /// All known issues from the tracker, in the configured kanban-column order
+    /// of `tracker.columns` (or active+terminal). UI uses this to render the
+    /// board; `running`/`retrying` overlay live state on top.
+    #[serde(default)]
+    pub kanban: KanbanBoard,
+    /// `tracker.repo` from config, surfaced for the UI title bar.
+    #[serde(default)]
+    pub repo: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KanbanBoard {
+    pub columns: Vec<KanbanColumn>,
+    /// Issues whose state didn't match any configured column (visibility for
+    /// stragglers — e.g. open with no `status:*` label).
+    pub unsorted: Vec<Issue>,
+    /// True when the underlying tracker fetch has succeeded at least once.
+    /// While false, the UI should render an empty/loading state.
+    pub loaded: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KanbanColumn {
+    pub state: String,
+    pub issues: Vec<Issue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
