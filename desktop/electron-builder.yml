@@ -1,0 +1,24 @@
+appId: com.meridian.app
+productName: Meridian
+directories:
+  output: dist
+  buildResources: build
+files:
+  - main.js
+  - preload.js
+  - package.json
+extraResources:
+  # Ship the meridian Rust binary alongside the app and bundle the default
+  # WORKFLOW.md so first-run can scaffold ~/Library/Application Support/Meridian.
+  - from: "../target/release/meridian"
+    to: "bin/meridian"
+  - from: "../WORKFLOW.md"
+    to: "WORKFLOW.md"
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dir
+      arch:
+        - arm64
+  hardenedRuntime: false
+  gatekeeperAssess: false

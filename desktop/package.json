@@ -1,0 +1,16 @@
+{
+  "name": "meridian-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron shell for the Meridian orchestrator",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:mac": "electron-builder --mac --arm64",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}
