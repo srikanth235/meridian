@@ -82,6 +82,12 @@ pub struct AgentConfig {
     pub max_turns: u32,
     pub max_retry_backoff_ms: u64,
     pub max_concurrent_agents_by_state: HashMap<String, u32>,
+    /// If true, the orchestrator skips new dispatches and re-queues retries
+    /// without invoking workers. In-flight workers finish naturally. Toggleable
+    /// at runtime via /api/control/{pause|resume}; the runtime toggle takes
+    /// precedence over this default until the daemon restarts.
+    /// Defaults to `true` so a fresh install doesn't auto-burn agent quota.
+    pub paused: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +177,10 @@ impl ServiceConfig {
             max_retry_backoff_ms: int(&agent_obj, "max_retry_backoff_ms")
                 .unwrap_or(DEFAULT_MAX_RETRY_BACKOFF_MS),
             max_concurrent_agents_by_state: parse_state_map(&agent_obj, "max_concurrent_agents_by_state"),
+            paused: agent_obj
+                .get("paused")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
         };
 
         let codex_obj = obj(&root, "codex");

@@ -5,7 +5,7 @@ use axum::{
     },
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use std::net::SocketAddr;
@@ -36,6 +36,8 @@ pub async fn serve(
         .route("/workflow", get(get_workflow))
         .route("/health", get(get_health))
         .route("/sessions/:issue_id/log", get(get_session_log))
+        .route("/control/pause", post(post_pause))
+        .route("/control/resume", post(post_resume))
         .route("/ws", get(ws_upgrade));
 
     let mut app = Router::new()
@@ -74,6 +76,16 @@ async fn get_workflow(State(s): State<AppState>) -> Json<serde_json::Value> {
 
 async fn get_health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({"ok": true})))
+}
+
+async fn post_pause(State(s): State<AppState>) -> impl IntoResponse {
+    s.orch.set_paused(Some(true));
+    (StatusCode::OK, Json(serde_json::json!({"paused": true})))
+}
+
+async fn post_resume(State(s): State<AppState>) -> impl IntoResponse {
+    s.orch.set_paused(Some(false));
+    (StatusCode::OK, Json(serde_json::json!({"paused": false})))
 }
 
 async fn get_session_log(

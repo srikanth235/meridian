@@ -24,6 +24,9 @@ workspace:
   root: ~/.meridian/workspaces
 
 agent:
+  # Start paused so opening the app doesn't auto-dispatch agents on every
+  # status:todo issue. Toggle via the UI button (or POST /api/control/resume).
+  paused: true
   max_concurrent_agents: 4
   max_turns: 20
   max_retry_backoff_ms: 300000

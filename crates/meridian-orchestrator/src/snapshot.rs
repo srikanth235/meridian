@@ -21,6 +21,9 @@ pub struct Snapshot {
     /// `tracker.repo` from config, surfaced for the UI title bar.
     #[serde(default)]
     pub repo: Option<String>,
+    /// True when the orchestrator is currently skipping new dispatches.
+    #[serde(default)]
+    pub paused: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

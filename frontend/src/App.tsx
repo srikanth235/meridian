@@ -61,6 +61,7 @@ function Header({ conn, snapshot }: { conn: string; snapshot: Snapshot | null })
           )}
         </div>
         <div className="flex-1" />
+        <PauseToggle snapshot={snapshot} />
         <Stat label="running" value={`${snapshot?.running.length ?? 0} / ${snapshot?.max_concurrent_agents ?? "–"}`} />
         <Stat label="retrying" value={`${snapshot?.retrying.length ?? 0}`} />
         <Stat label="tokens" value={totals ? formatNumber(totals.total_tokens) : "–"} />
@@ -68,7 +69,34 @@ function Header({ conn, snapshot }: { conn: string; snapshot: Snapshot | null })
         <Stat label="poll" value={snapshot ? `${Math.round(snapshot.poll_interval_ms / 1000)}s` : "–"} />
         <ConnPill state={conn} />
       </div>
+      {snapshot?.paused && (
+        <div className="bg-warn/15 border-t border-warn/30 text-warn text-xs px-6 py-1.5 text-center">
+          paused — no new agents will dispatch. in-flight workers continue.
+        </div>
+      )}
     </header>
+  );
+}
+
+function PauseToggle({ snapshot }: { snapshot: Snapshot | null }) {
+  const [busy, setBusy] = useState(false);
+  const paused = snapshot?.paused ?? true;
+  if (!snapshot) return null;
+  return (
+    <button
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await fetch(`/api/control/${paused ? "resume" : "pause"}`, { method: "POST" });
+        } finally {
+          setBusy(false);
+        }
+      }}
+      className={`pill text-[10px] ${paused ? "pill-warn" : "pill-ok"} hover:opacity-80 cursor-pointer`}
+    >
+      {busy ? "…" : paused ? "▶ resume" : "⏸ pause"}
+    </button>
   );
 }
 

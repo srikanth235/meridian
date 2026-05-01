@@ -46,6 +46,12 @@ impl OrchestratorHandle {
     pub fn session_log(&self, issue_id: &str) -> Option<SessionLog> {
         self.inner.session_log(issue_id)
     }
+    /// Set the runtime pause override. `None` clears the override and falls
+    /// back to `agent.paused` from WORKFLOW.md.
+    pub fn set_paused(&self, paused: Option<bool>) {
+        *self.inner.pause_override.lock() = paused;
+        let _ = self.inner.events.send(SnapshotEvent::StateChanged);
+    }
 }
 
 /// Lightweight signal so WS clients know to re-fetch the snapshot.
@@ -72,6 +78,9 @@ struct OrchestratorInner {
     /// Retained for SESSION_LOG_TTL_SECS after the run finishes so the UI can
     /// inspect what happened on a recently-closed issue.
     session_logs: Mutex<HashMap<String, VecDeque<SessionLogEntry>>>,
+    /// Runtime pause override; takes precedence over `agent.paused` from
+    /// WORKFLOW.md until cleared (or process restart).
+    pause_override: Mutex<Option<bool>>,
 }
 
 impl Orchestrator {
@@ -96,6 +105,7 @@ impl Orchestrator {
             events: tx,
             board: Mutex::new(KanbanBoard::default()),
             session_logs: Mutex::new(HashMap::new()),
+            pause_override: Mutex::new(None),
         });
         Self { inner }
     }
@@ -121,6 +131,15 @@ impl Orchestrator {
 impl OrchestratorInner {
     fn current_config(&self) -> ServiceConfig {
         self.workflow.current().config
+    }
+
+    /// Effective paused state: runtime override wins, else `agent.paused` from
+    /// WORKFLOW.md.
+    fn effective_paused(&self) -> bool {
+        if let Some(o) = *self.pause_override.lock() {
+            return o;
+        }
+        self.current_config().agent.paused
     }
 
     async fn startup_cleanup(&self) {
@@ -186,6 +205,12 @@ impl OrchestratorInner {
 
         let board = build_board(&cfg, &all_issues);
         *self.board.lock() = board;
+
+        if self.effective_paused() {
+            debug!("orchestrator paused; skipping dispatch this tick");
+            let _ = self.events.send(SnapshotEvent::StateChanged);
+            return;
+        }
 
         let active_lc: Vec<String> = cfg
             .tracker
@@ -573,6 +598,16 @@ impl OrchestratorInner {
     }
 
     async fn handle_retry(self: Arc<Self>, issue: Issue, attempt: u32) {
+        if self.effective_paused() {
+            // Re-queue without dispatching so we resume right after unpause.
+            self.schedule_retry_inner(
+                issue,
+                attempt,
+                Some("paused".into()),
+                CONTINUATION_DELAY_MS * 5,
+            );
+            return;
+        }
         let cfg = self.current_config();
         let candidates = match self
             .tracker
@@ -818,6 +853,7 @@ impl OrchestratorInner {
         };
         let kanban = self.board.lock().clone();
         let repo = self.workflow.current().config.tracker.repo.clone();
+        let paused = self.effective_paused();
         Snapshot {
             running,
             retrying,
@@ -828,6 +864,7 @@ impl OrchestratorInner {
             max_concurrent_agents: s.max_concurrent_agents,
             kanban,
             repo,
+            paused,
         }
     }
 }

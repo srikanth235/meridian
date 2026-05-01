@@ -76,6 +76,7 @@ export interface Snapshot {
   max_concurrent_agents: number;
   kanban: KanbanBoard;
   repo: string | null;
+  paused: boolean;
 }
 
 export interface WorkflowResponse {
