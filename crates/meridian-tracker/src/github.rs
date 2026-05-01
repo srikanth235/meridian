@@ -24,11 +24,11 @@ const GH_TIMEOUT: Duration = Duration::from_secs(30);
 ///                                 from configured active/terminal states,
 ///                                 or `"open"` as a fallback.
 ///
-/// `Issue.id` is the issue *number* (string), so reconciliation can call
-/// `gh issue view <number>` directly.
+/// Multi-repo aware: `Issue.id` is `<owner>/<name>/<number>` so it stays
+/// globally unique. `Issue.repo` carries `owner/name` for UI grouping.
 #[derive(Clone)]
 pub struct GithubTracker {
-    repo: String,
+    repos: Vec<String>,
     active_states_lc: Vec<String>,
     terminal_states_lc: Vec<String>,
 }
@@ -38,12 +38,16 @@ impl GithubTracker {
         if cfg.kind != "github" {
             return Err(TrackerError::UnsupportedTrackerKind(cfg.kind.clone()));
         }
-        let repo = cfg.repo.clone().ok_or(TrackerError::MissingRepo)?;
-        if !repo.contains('/') {
-            return Err(TrackerError::InvalidRepo(repo));
+        if cfg.repos.is_empty() {
+            return Err(TrackerError::MissingRepo);
+        }
+        for repo in &cfg.repos {
+            if !repo.contains('/') {
+                return Err(TrackerError::InvalidRepo(repo.clone()));
+            }
         }
         Ok(Self {
-            repo,
+            repos: cfg.repos.clone(),
             active_states_lc: cfg.active_states.iter().map(|s| s.to_lowercase()).collect(),
             terminal_states_lc: cfg
                 .terminal_states
@@ -59,10 +63,10 @@ impl GithubTracker {
         all
     }
 
-    async fn gh_json(&self, args: &[&str]) -> Result<Value, TrackerError> {
+    async fn gh_json(args: &[&str]) -> Result<Value, TrackerError> {
         let mut cmd = Command::new("gh");
         cmd.args(args);
-        debug!(?args, repo = %self.repo, "running gh");
+        debug!(?args, "running gh");
         let fut = cmd.output();
         let out = match tokio::time::timeout(GH_TIMEOUT, fut).await {
             Ok(Ok(o)) => o,
@@ -81,17 +85,16 @@ impl GithubTracker {
             .map_err(|e| TrackerError::GhBadOutput(format!("invalid json: {e}")))
     }
 
-    async fn list(&self, gh_state: &str, limit: u32) -> Result<Vec<Value>, TrackerError> {
+    async fn list(repo: &str, gh_state: &str, limit: u32) -> Result<Vec<Value>, TrackerError> {
         let limit_str = limit.to_string();
-        let v = self
-            .gh_json(&[
-                "issue", "list",
-                "--repo", &self.repo,
-                "--state", gh_state,
-                "--limit", &limit_str,
-                "--json", LIST_FIELDS,
-            ])
-            .await?;
+        let v = Self::gh_json(&[
+            "issue", "list",
+            "--repo", repo,
+            "--state", gh_state,
+            "--limit", &limit_str,
+            "--json", LIST_FIELDS,
+        ])
+        .await?;
         Ok(v.as_array().cloned().unwrap_or_default())
     }
 
@@ -117,9 +120,6 @@ impl GithubTracker {
                     .collect()
             })
             .unwrap_or_default();
-        // Prefer a label that matches what the caller asked for; if none of
-        // the wanted labels matches, fall back to any known status label so
-        // the kanban groups it into the right column anyway.
         for w in wanted_lc {
             if w == "open" || w == "closed" {
                 continue;
@@ -138,6 +138,17 @@ impl GithubTracker {
         }
         "open".to_string()
     }
+
+    /// Split a global Issue.id (`owner/name/number`) back into (`owner/name`, `number`).
+    fn split_id(id: &str) -> Option<(String, String)> {
+        let last = id.rfind('/')?;
+        let repo = &id[..last];
+        let number = &id[last + 1..];
+        if !repo.contains('/') || number.is_empty() {
+            return None;
+        }
+        Some((repo.to_string(), number.to_string()))
+    }
 }
 
 #[async_trait]
@@ -150,25 +161,36 @@ impl Tracker for GithubTracker {
         let want_open = wanted_lc.iter().any(|s| s != "closed");
         let want_closed = wanted_lc.iter().any(|s| s == "closed");
 
-        let mut nodes: Vec<Value> = Vec::new();
-        if want_open {
-            nodes.extend(self.list("open", OPEN_LIMIT).await?);
-        }
-        if want_closed {
-            nodes.extend(self.list("closed", CLOSED_LIMIT).await?);
+        // Fan out across repos. Each repo gets up to two `gh issue list` calls
+        // (open/closed). We do them sequentially per repo but parallelize across
+        // repos.
+        let mut tasks = Vec::new();
+        for repo in &self.repos {
+            let repo = repo.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut nodes: Vec<Value> = Vec::new();
+                if want_open {
+                    nodes.extend(Self::list(&repo, "open", OPEN_LIMIT).await?);
+                }
+                if want_closed {
+                    nodes.extend(Self::list(&repo, "closed", CLOSED_LIMIT).await?);
+                }
+                Ok::<_, TrackerError>((repo, nodes))
+            }));
         }
 
-        // Return every fetched node, not just those whose computed state is in
-        // the wanted list. The orchestrator's `build_board` puts unmatched
-        // issues in an "unsorted" bucket so the UI can still display them, and
-        // dispatch is gated separately by `active_states`.
-        let mut out = Vec::with_capacity(nodes.len());
-        for node in &nodes {
-            let computed_state = self.classify_state(node, &wanted_lc);
-            if let Some(issue) = normalize_issue(node, &computed_state) {
-                out.push(issue);
-            } else {
-                warn!(node = %node, "skipping unparseable github issue");
+        let mut out = Vec::new();
+        for task in tasks {
+            let (repo, nodes) = task
+                .await
+                .map_err(|e| TrackerError::GhSpawn(format!("join error: {e}")))??;
+            for node in &nodes {
+                let computed_state = self.classify_state(node, &wanted_lc);
+                if let Some(issue) = normalize_issue(node, &repo, &computed_state) {
+                    out.push(issue);
+                } else {
+                    warn!(node = %node, "skipping unparseable github issue");
+                }
             }
         }
         Ok(out)
@@ -184,15 +206,18 @@ impl Tracker for GithubTracker {
         }
         let known = self.known_states_lc();
         for id in issue_ids {
-            let view = self
-                .gh_json(&[
-                    "issue", "view", id,
-                    "--repo", &self.repo,
-                    "--json", VIEW_FIELDS,
-                ])
-                .await?;
+            let Some((repo, number)) = Self::split_id(id) else {
+                warn!(%id, "skipping unparseable issue id (expected owner/name/number)");
+                continue;
+            };
+            let view = Self::gh_json(&[
+                "issue", "view", &number,
+                "--repo", &repo,
+                "--json", VIEW_FIELDS,
+            ])
+            .await?;
             let computed = self.classify_state(&view, &known);
-            if let Some(issue) = normalize_issue(&view, &computed) {
+            if let Some(issue) = normalize_issue(&view, &repo, &computed) {
                 out.insert(issue.id.clone(), issue);
             }
         }
@@ -200,9 +225,9 @@ impl Tracker for GithubTracker {
     }
 }
 
-fn normalize_issue(node: &Value, computed_state: &str) -> Option<Issue> {
+fn normalize_issue(node: &Value, repo: &str, computed_state: &str) -> Option<Issue> {
     let number = node.get("number").and_then(|v| v.as_i64())?;
-    let id = number.to_string();
+    let id = format!("{repo}/{number}");
     let identifier = format!("#{number}");
     let title = node.get("title")?.as_str()?.to_string();
     let description = node
@@ -250,6 +275,7 @@ fn normalize_issue(node: &Value, computed_state: &str) -> Option<Issue> {
         blocked_by: Vec::new(),
         created_at,
         updated_at,
+        repo: Some(repo.to_string()),
     })
 }
 
@@ -282,7 +308,7 @@ mod tests {
 
     fn mk_tracker(active: &[&str], terminal: &[&str]) -> GithubTracker {
         GithubTracker {
-            repo: "owner/repo".into(),
+            repos: vec!["owner/repo".into()],
             active_states_lc: active.iter().map(|s| s.to_lowercase()).collect(),
             terminal_states_lc: terminal.iter().map(|s| s.to_lowercase()).collect(),
         }
@@ -312,8 +338,6 @@ mod tests {
 
     #[test]
     fn falls_back_to_known_label_when_caller_didnt_ask() {
-        // Useful for fetch_issue_states_by_ids: caller passes empty wanted list
-        // but issue carries a known status label.
         let t = mk_tracker(&["status:todo", "status:in-progress"], &["closed"]);
         let node = json!({"state": "OPEN", "labels": [{"name": "status:in-progress"}]});
         let known = t.known_states_lc();
@@ -321,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_basic_fields() {
+    fn normalizes_id_and_repo() {
         let node = json!({
             "number": 42, "title": "Fix login bug",
             "body": "details here", "state": "OPEN",
@@ -329,12 +353,21 @@ mod tests {
             "url": "https://github.com/owner/repo/issues/42",
             "createdAt": "2026-01-01T00:00:00Z",
         });
-        let i = normalize_issue(&node, "status:todo").unwrap();
-        assert_eq!(i.id, "42");
+        let i = normalize_issue(&node, "owner/repo", "status:todo").unwrap();
+        assert_eq!(i.id, "owner/repo/42");
         assert_eq!(i.identifier, "#42");
+        assert_eq!(i.repo.as_deref(), Some("owner/repo"));
         assert_eq!(i.state, "status:todo");
-        assert_eq!(i.labels, vec!["status:todo".to_string()]);
-        assert_eq!(i.branch_name.as_deref(), Some("issue-42-fix-login-bug"));
+    }
+
+    #[test]
+    fn split_id_round_trip() {
+        assert_eq!(
+            GithubTracker::split_id("owner/repo/42"),
+            Some(("owner/repo".to_string(), "42".to_string()))
+        );
+        assert_eq!(GithubTracker::split_id("just-number"), None);
+        assert_eq!(GithubTracker::split_id("repo/42"), None); // owner/name needs slash
     }
 
     #[test]

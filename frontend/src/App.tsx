@@ -6,7 +6,10 @@ import type { Issue, RetryRow, RunningRow, SessionLogEntry, Snapshot } from "./t
 
 const RUNNING_GROUP = "__running__";
 
-type View = { kind: "home" } | { kind: "issue"; id: string };
+type View =
+  | { kind: "home" }
+  | { kind: "project"; repo: string }
+  | { kind: "issue"; id: string };
 
 export function App() {
   const { snapshot, conn } = useSnapshot();
@@ -102,7 +105,9 @@ function Sidebar({
   onView: (v: View) => void;
 }) {
   const selectedId = view.kind === "issue" ? view.id : null;
+  const activeRepo = repoForView(view, snapshot);
   const onSelect = (id: string) => onView({ kind: "issue", id });
+
   const runningById = useMemo(() => {
     const m = new Map<string, RunningRow>();
     for (const r of snapshot?.running ?? []) m.set(r.issue.id, r);
@@ -114,31 +119,58 @@ function Sidebar({
     return m;
   }, [snapshot]);
 
+  const repos = snapshot?.repos ?? [];
+  const projectCounts = useMemo(() => {
+    const m = new Map<string, { total: number; running: number }>();
+    if (!snapshot) return m;
+    for (const r of repos) m.set(r, { total: 0, running: 0 });
+    const tally = (issue: Issue, isRunning: boolean) => {
+      const r = issue.repo;
+      if (!r) return;
+      const cur = m.get(r) ?? { total: 0, running: 0 };
+      cur.total += 1;
+      if (isRunning) cur.running += 1;
+      m.set(r, cur);
+    };
+    const runningIds = new Set(snapshot.running.map((r) => r.issue.id));
+    for (const col of snapshot.kanban?.columns ?? []) {
+      for (const i of col.issues) tally(i, runningIds.has(i.id));
+    }
+    for (const i of snapshot.kanban?.unsorted ?? []) tally(i, runningIds.has(i.id));
+    return m;
+  }, [snapshot, repos]);
+
+  // Issues for the active project (or all when on Home), grouped by state.
   const groups = useMemo(() => {
     const out: Array<{ key: string; label: string; issues: Issue[] }> = [];
     if (!snapshot?.kanban?.loaded) return out;
 
-    // Pin running at the top.
-    const runningIssues = (snapshot.running ?? []).map((r) => r.issue);
+    const passesRepo = (i: Issue) => !activeRepo || i.repo === activeRepo;
+
+    const runningIssues = (snapshot.running ?? [])
+      .map((r) => r.issue)
+      .filter(passesRepo);
     if (runningIssues.length > 0) {
       out.push({ key: RUNNING_GROUP, label: "Running", issues: runningIssues });
     }
     const runningIds = new Set(runningIssues.map((i) => i.id));
     for (const col of snapshot.kanban.columns ?? []) {
-      const issues = col.issues.filter((i) => !runningIds.has(i.id));
+      const issues = col.issues.filter(
+        (i) => passesRepo(i) && !runningIds.has(i.id)
+      );
       if (issues.length > 0) {
         out.push({ key: col.state, label: prettyState(col.state), issues });
       }
     }
     if ((snapshot.kanban.unsorted ?? []).length > 0) {
-      out.push({
-        key: "__unsorted__",
-        label: "Unsorted",
-        issues: snapshot.kanban.unsorted.filter((i) => !runningIds.has(i.id)),
-      });
+      const issues = snapshot.kanban.unsorted.filter(
+        (i) => passesRepo(i) && !runningIds.has(i.id)
+      );
+      if (issues.length > 0)
+        out.push({ key: "__unsorted__", label: "Unsorted", issues });
     }
     return out;
-  }, [snapshot]);
+  }, [snapshot, activeRepo]);
 
   return (
     <aside className="shrink-0 w-72 border-r border-border bg-panel/40 overflow-y-auto">
@@ -153,14 +185,58 @@ function Sidebar({
         >
           <span className="text-slate-400 text-sm leading-none">⌂</span>
           <span className="text-[12px] text-slate-200">Home</span>
-          <span className="text-[10px] text-slate-600 ml-auto">kanban</span>
+          <span className="text-[10px] text-slate-600 ml-auto">all projects</span>
         </button>
+
+        <div className="mt-3 px-4 mb-1 text-[10px] uppercase tracking-wider text-slate-600">
+          Projects
+        </div>
+        {repos.length === 0 ? (
+          <div className="text-xs text-slate-600 px-4 py-1.5 italic">
+            no repos configured
+          </div>
+        ) : (
+          <ul>
+            {repos.map((r) => {
+              const counts = projectCounts.get(r) ?? { total: 0, running: 0 };
+              const selected = activeRepo === r;
+              return (
+                <li key={r}>
+                  <button
+                    onClick={() =>
+                      onView({ kind: "project", repo: r })
+                    }
+                    className={`w-full text-left px-4 py-1.5 flex items-center gap-2 hover:bg-slate-800/40 ${
+                      selected
+                        ? "bg-slate-700/40 border-l-2 border-accent -ml-px"
+                        : ""
+                    }`}
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                        counts.running > 0 ? "bg-ok animate-pulse" : "bg-slate-600"
+                      }`}
+                    />
+                    <span className="text-[12px] text-slate-200 truncate flex-1">
+                      {r}
+                    </span>
+                    <span className="text-[10px] text-slate-600 tabular-nums">
+                      {counts.running > 0 ? `${counts.running}/` : ""}
+                      {counts.total}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
         <div className="my-2 border-t border-border/40" />
 
         {!snapshot?.kanban?.loaded ? (
           <div className="text-xs text-slate-500 px-4 py-2">loading…</div>
         ) : groups.length === 0 ? (
-          <div className="text-xs text-slate-500 px-4 py-2">no issues</div>
+          <div className="text-xs text-slate-600 px-4 py-2 italic">no issues</div>
         ) : (
           groups.map((g) => (
             <SidebarGroup
@@ -172,12 +248,24 @@ function Sidebar({
               retryById={retryById}
               selectedId={selectedId}
               onSelect={onSelect}
+              showRepo={!activeRepo}
             />
           ))
         )}
       </nav>
     </aside>
   );
+}
+
+function repoForView(view: View, snapshot: Snapshot | null): string | null {
+  if (view.kind === "project") return view.repo;
+  if (view.kind === "issue" && snapshot) {
+    for (const col of snapshot.kanban?.columns ?? []) {
+      const f = col.issues.find((i) => i.id === view.id);
+      if (f?.repo) return f.repo;
+    }
+  }
+  return null;
 }
 
 function SidebarGroup({
@@ -188,6 +276,7 @@ function SidebarGroup({
   retryById,
   selectedId,
   onSelect,
+  showRepo,
 }: {
   label: string;
   issues: Issue[];
@@ -196,6 +285,7 @@ function SidebarGroup({
   retryById: Map<string, RetryRow>;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  showRepo: boolean;
 }) {
   const [open, setOpen] = useState(true);
   return (
@@ -218,6 +308,7 @@ function SidebarGroup({
               retry={retryById.get(issue.id)}
               selected={selectedId === issue.id}
               onSelect={() => onSelect(issue.id)}
+              showRepo={showRepo}
             />
           ))}
         </ul>
@@ -232,12 +323,14 @@ function SidebarItem({
   retry,
   selected,
   onSelect,
+  showRepo,
 }: {
   issue: Issue;
   live?: RunningRow;
   retry?: RetryRow;
   selected: boolean;
   onSelect: () => void;
+  showRepo: boolean;
 }) {
   const dotCls = live
     ? "bg-ok animate-pulse"
@@ -246,6 +339,7 @@ function SidebarItem({
     : issue.state === "closed"
     ? "bg-slate-600"
     : "bg-slate-500";
+  const repoShort = issue.repo ? issue.repo.split("/").pop() : null;
   return (
     <li>
       <button
@@ -256,7 +350,7 @@ function SidebarItem({
       >
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} />
         <span className="text-[11px] text-slate-500 tabular-nums shrink-0">
-          {issue.identifier}
+          {showRepo && repoShort ? `${repoShort}${issue.identifier}` : issue.identifier}
         </span>
         <span className="text-[12px] text-slate-200 truncate flex-1">{issue.title}</span>
       </button>
@@ -285,7 +379,10 @@ function Main({
     );
   }
   if (view.kind === "home") {
-    return <KanbanView snapshot={snapshot} onView={onView} />;
+    return <KanbanView snapshot={snapshot} repo={null} onView={onView} />;
+  }
+  if (view.kind === "project") {
+    return <KanbanView snapshot={snapshot} repo={view.repo} onView={onView} />;
   }
   if (!issue) {
     return (
@@ -299,9 +396,11 @@ function Main({
 
 function KanbanView({
   snapshot,
+  repo,
   onView,
 }: {
   snapshot: Snapshot;
+  repo: string | null;
   onView: (v: View) => void;
 }) {
   const runningById = useMemo(() => {
@@ -331,29 +430,51 @@ function KanbanView({
     );
   }
 
+  const filterIssues = (issues: Issue[]) =>
+    repo ? issues.filter((i) => i.repo === repo) : issues;
+
   return (
-    <main className="flex-1 overflow-x-auto">
-      <div className="px-6 py-6 flex gap-4 min-w-min items-start">
-        {board.columns.map((col) => (
-          <KanbanColumn
-            key={col.state}
-            state={col.state}
-            issues={col.issues}
-            running={runningById}
-            retrying={retryById}
-            onOpenIssue={(id) => onView({ kind: "issue", id })}
-          />
-        ))}
-        {board.unsorted.length > 0 && (
-          <KanbanColumn
-            state="(unsorted)"
-            issues={board.unsorted}
-            running={runningById}
-            retrying={retryById}
-            onOpenIssue={(id) => onView({ kind: "issue", id })}
-            muted
-          />
+    <main className="flex-1 flex flex-col min-h-0">
+      <header className="shrink-0 border-b border-border px-6 py-3 flex items-baseline gap-3">
+        <h1 className="text-sm text-slate-200 font-medium">
+          {repo ?? "All projects"}
+        </h1>
+        {repo && (
+          <a
+            href={`https://github.com/${repo}`}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[10px] text-slate-600 hover:text-slate-400"
+          >
+            github ↗
+          </a>
         )}
+      </header>
+      <div className="flex-1 overflow-x-auto">
+        <div className="px-6 py-6 flex gap-4 min-w-min items-start">
+          {board.columns.map((col) => (
+            <KanbanColumn
+              key={col.state}
+              state={col.state}
+              issues={filterIssues(col.issues)}
+              running={runningById}
+              retrying={retryById}
+              onOpenIssue={(id) => onView({ kind: "issue", id })}
+              showRepo={!repo}
+            />
+          ))}
+          {filterIssues(board.unsorted).length > 0 && (
+            <KanbanColumn
+              state="(unsorted)"
+              issues={filterIssues(board.unsorted)}
+              running={runningById}
+              retrying={retryById}
+              onOpenIssue={(id) => onView({ kind: "issue", id })}
+              showRepo={!repo}
+              muted
+            />
+          )}
+        </div>
       </div>
     </main>
   );
@@ -365,6 +486,7 @@ function KanbanColumn({
   running,
   retrying,
   onOpenIssue,
+  showRepo,
   muted = false,
 }: {
   state: string;
@@ -372,6 +494,7 @@ function KanbanColumn({
   running: Map<string, RunningRow>;
   retrying: Map<string, RetryRow>;
   onOpenIssue: (id: string) => void;
+  showRepo: boolean;
   muted?: boolean;
 }) {
   return (
@@ -397,6 +520,7 @@ function KanbanColumn({
               running={running.get(issue.id)}
               retry={retrying.get(issue.id)}
               onOpen={() => onOpenIssue(issue.id)}
+              showRepo={showRepo}
             />
           ))
         )}
@@ -410,11 +534,13 @@ function KanbanCard({
   running,
   retry,
   onOpen,
+  showRepo,
 }: {
   issue: Issue;
   running?: RunningRow;
   retry?: RetryRow;
   onOpen: () => void;
+  showRepo: boolean;
 }) {
   const live = !!running;
   const queued = !!retry;
@@ -434,9 +560,11 @@ function KanbanCard({
           target="_blank"
           rel="noreferrer"
           onClick={(e) => e.stopPropagation()}
-          className="text-accent text-xs tabular-nums hover:underline"
+          className="text-accent text-xs tabular-nums hover:underline truncate"
         >
-          {issue.identifier}
+          {showRepo && issue.repo
+            ? `${issue.repo.split("/").pop()}${issue.identifier}`
+            : issue.identifier}
         </a>
         {live && <span className="pill pill-ok text-[9px]">running</span>}
         {!live && queued && (

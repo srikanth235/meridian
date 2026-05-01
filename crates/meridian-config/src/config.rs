@@ -35,8 +35,10 @@ pub struct ServiceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackerConfig {
     pub kind: String,
-    /// `owner/name` for GitHub.
-    pub repo: Option<String>,
+    /// One or more `owner/name` repos to poll. The legacy `repo:` (singular)
+    /// key is also accepted at parse time and folded into this list.
+    #[serde(default)]
+    pub repos: Vec<String>,
     /// Issue states the orchestrator dispatches on. For `kind: github` these
     /// are label names like `status:todo` (case-insensitive) plus the special
     /// token `open` for label-less open issues.
@@ -126,8 +128,16 @@ impl ServiceConfig {
 
         let tracker_obj = obj(&root, "tracker");
         let tracker_kind = string(&tracker_obj, "kind").unwrap_or_default();
+        // Accept either `repos: [a, b]` or legacy singular `repo: a`. Dedup
+        // while preserving order so the UI's project list is stable.
+        let mut repos = string_list(&tracker_obj, "repos").unwrap_or_default();
+        if let Some(single) = string(&tracker_obj, "repo") {
+            if !repos.iter().any(|r| r == &single) {
+                repos.push(single);
+            }
+        }
         let tracker = TrackerConfig {
-            repo: string(&tracker_obj, "repo"),
+            repos,
             active_states: string_list(&tracker_obj, "active_states")
                 .unwrap_or_else(default_active_states),
             terminal_states: string_list(&tracker_obj, "terminal_states")
@@ -242,17 +252,17 @@ impl ServiceConfig {
             ));
         }
         if self.tracker.kind == "github" {
-            let repo = self
-                .tracker
-                .repo
-                .as_deref()
-                .ok_or_else(|| ConfigError::PreflightFailed(
-                    "tracker.repo is required for github (\"owner/name\")".into(),
-                ))?;
-            if !repo.contains('/') {
-                return Err(ConfigError::PreflightFailed(format!(
-                    "tracker.repo must be \"owner/name\", got {repo:?}"
-                )));
+            if self.tracker.repos.is_empty() {
+                return Err(ConfigError::PreflightFailed(
+                    "tracker.repos must list at least one \"owner/name\" entry".into(),
+                ));
+            }
+            for repo in &self.tracker.repos {
+                if !repo.contains('/') {
+                    return Err(ConfigError::PreflightFailed(format!(
+                        "tracker.repos entry must be \"owner/name\", got {repo:?}"
+                    )));
+                }
             }
         } else {
             return Err(ConfigError::PreflightFailed(format!(
@@ -413,11 +423,29 @@ mod tests {
     }
 
     #[test]
-    fn preflight_passes_for_valid_github() {
+    fn preflight_passes_for_legacy_singular() {
         let cfg = ServiceConfig::from_raw(&json!({
             "tracker": {"kind": "github", "repo": "owner/name"}
         }));
         assert!(cfg.preflight().is_ok());
+        assert_eq!(cfg.tracker.repos, vec!["owner/name".to_string()]);
+    }
+
+    #[test]
+    fn preflight_passes_for_repos_array() {
+        let cfg = ServiceConfig::from_raw(&json!({
+            "tracker": {"kind": "github", "repos": ["o/a", "o/b"]}
+        }));
+        assert!(cfg.preflight().is_ok());
+        assert_eq!(cfg.tracker.repos.len(), 2);
+    }
+
+    #[test]
+    fn singular_and_array_merge_with_dedupe() {
+        let cfg = ServiceConfig::from_raw(&json!({
+            "tracker": {"kind": "github", "repos": ["o/a", "o/b"], "repo": "o/a"}
+        }));
+        assert_eq!(cfg.tracker.repos, vec!["o/a".to_string(), "o/b".to_string()]);
     }
 
     #[test]

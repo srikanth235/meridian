@@ -37,6 +37,7 @@ fn issue() -> Issue {
         blocked_by: vec![],
         created_at: Some(Utc::now()),
         updated_at: None,
+        repo: None,
     }
 }
 

@@ -156,7 +156,7 @@ impl OrchestratorInner {
             Ok(issues) => {
                 if cfg.workspace.delete_on_terminal {
                     for issue in issues {
-                        self.workspace.remove(&issue.identifier, &cfg.hooks).await;
+                        self.workspace.remove(&issue.id, &cfg.hooks).await;
                     }
                 } else {
                     debug!(
@@ -297,7 +297,7 @@ impl OrchestratorInner {
             s.claimed.insert(id.clone());
         }
         let cfg = self.current_config();
-        let workspace_root_path = match self.workspace.workspace_path(&issue.identifier).into_os_string().into_string() {
+        let workspace_root_path = match self.workspace.workspace_path(&issue.id).into_os_string().into_string() {
             Ok(p) => p,
             Err(_) => {
                 warn!(issue = %issue.identifier, "workspace path is not utf-8; skipping");
@@ -323,7 +323,7 @@ impl OrchestratorInner {
         cfg: ServiceConfig,
     ) {
         // Prepare workspace.
-        let workspace = match self.workspace.ensure(&issue.identifier, &cfg.hooks).await {
+        let workspace = match self.workspace.ensure(&issue.id, &cfg.hooks).await {
             Ok(w) => w,
             Err(e) => {
                 warn!(issue = %issue.identifier, error = %e, "workspace prepare failed");
@@ -728,11 +728,9 @@ impl OrchestratorInner {
                 let _ = c.send(());
             }
             if cfg.workspace.delete_on_terminal {
-                // Clean workspace using a snapshot of the identifier.
-                let identifier = self.state.lock().running.get(&id).map(|e| e.issue.identifier.clone());
-                if let Some(ident) = identifier {
-                    self.workspace.remove(&ident, &cfg.hooks).await;
-                }
+                // workspace key = globally-unique issue.id (sanitized), so it
+                // works for multi-repo configs where #N may collide.
+                self.workspace.remove(&id, &cfg.hooks).await;
             }
         }
         for id in to_other {
@@ -852,7 +850,7 @@ impl OrchestratorInner {
                 .saturating_add(live_seconds),
         };
         let kanban = self.board.lock().clone();
-        let repo = self.workflow.current().config.tracker.repo.clone();
+        let repos = self.workflow.current().config.tracker.repos.clone();
         let paused = self.effective_paused();
         Snapshot {
             running,
@@ -863,7 +861,7 @@ impl OrchestratorInner {
             poll_interval_ms: s.poll_interval_ms,
             max_concurrent_agents: s.max_concurrent_agents,
             kanban,
-            repo,
+            repos,
             paused,
         }
     }

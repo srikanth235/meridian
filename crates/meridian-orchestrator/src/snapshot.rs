@@ -18,9 +18,9 @@ pub struct Snapshot {
     /// board; `running`/`retrying` overlay live state on top.
     #[serde(default)]
     pub kanban: KanbanBoard,
-    /// `tracker.repo` from config, surfaced for the UI title bar.
+    /// `tracker.repos` from config, surfaced for the UI's Projects list.
     #[serde(default)]
-    pub repo: Option<String>,
+    pub repos: Vec<String>,
     /// True when the orchestrator is currently skipping new dispatches.
     #[serde(default)]
     pub paused: bool,

@@ -1,7 +1,10 @@
 ---
 tracker:
   kind: github
-  repo: srikanth235/meridian
+  # One or more repos to poll. `repo:` (singular) is also accepted for
+  # back-compat; both forms get folded into a single list.
+  repos:
+    - srikanth235/meridian
   # `status:*` labels become kanban columns. `closed` is the special token
   # for the GitHub Closed state.
   active_states:

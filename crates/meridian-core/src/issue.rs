@@ -19,6 +19,11 @@ pub enum IssueState {
 }
 
 /// Normalized issue record (spec §4.1.1).
+///
+/// `id` is globally unique across repos when multi-repo is configured: the
+/// GitHub adapter sets it to `<owner>/<name>/<number>`. `identifier` is the
+/// short display form (e.g. `#42`) and `repo` carries the source (`owner/name`)
+/// so the UI can disambiguate when aggregating across projects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Issue {
     pub id: String,
@@ -35,6 +40,9 @@ pub struct Issue {
     pub blocked_by: Vec<Blocker>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+    /// Source repository (`owner/name`) when the tracker has a notion of it.
+    #[serde(default)]
+    pub repo: Option<String>,
 }
 
 impl Issue {

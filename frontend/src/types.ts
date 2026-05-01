@@ -11,6 +11,7 @@ export interface Issue {
   blocked_by: Array<{ id?: string | null; identifier?: string | null; state?: string | null }>;
   created_at?: string | null;
   updated_at?: string | null;
+  repo?: string | null;
 }
 
 export interface RunningRow {
@@ -75,7 +76,7 @@ export interface Snapshot {
   poll_interval_ms: number;
   max_concurrent_agents: number;
   kanban: KanbanBoard;
-  repo: string | null;
+  repos: string[];
   paused: boolean;
 }
 
