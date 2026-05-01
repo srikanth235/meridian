@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSnapshot } from "./useSnapshot";
 import { useSessionLog } from "./useSessionLog";
-import { formatDuration, formatNumber, relTime } from "./format";
+import { formatNumber, relTime } from "./format";
 import type { Issue, RetryRow, RunningRow, SessionLogEntry, Snapshot } from "./types";
 
 const RUNNING_GROUP = "__running__";
 
+type View = { kind: "home" } | { kind: "issue"; id: string };
+
 export function App() {
   const { snapshot, conn } = useSnapshot();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [view, setView] = useState<View>({ kind: "home" });
   // Re-render every second so relative timestamps tick.
   const [, force] = useState(0);
   useEffect(() => {
@@ -19,25 +21,21 @@ export function App() {
   // Resolve the selected issue from the live snapshot every render so it
   // stays fresh as state ticks.
   const selectedIssue = useMemo<Issue | null>(() => {
-    if (!selectedId || !snapshot) return null;
+    if (view.kind !== "issue" || !snapshot) return null;
     for (const col of snapshot.kanban?.columns ?? []) {
-      const f = col.issues.find((i) => i.id === selectedId);
+      const f = col.issues.find((i) => i.id === view.id);
       if (f) return f;
     }
-    for (const i of snapshot.kanban?.unsorted ?? []) if (i.id === selectedId) return i;
+    for (const i of snapshot.kanban?.unsorted ?? []) if (i.id === view.id) return i;
     return null;
-  }, [selectedId, snapshot]);
+  }, [view, snapshot]);
 
   return (
     <div className="h-full flex flex-col bg-bg">
       <TopBar conn={conn} snapshot={snapshot} />
       <div className="flex-1 flex min-h-0">
-        <Sidebar
-          snapshot={snapshot}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-        />
-        <Main snapshot={snapshot} issue={selectedIssue} />
+        <Sidebar snapshot={snapshot} view={view} onView={setView} />
+        <Main snapshot={snapshot} view={view} issue={selectedIssue} onView={setView} />
       </div>
     </div>
   );
@@ -96,13 +94,15 @@ function ConnPill({ state }: { state: string }) {
 
 function Sidebar({
   snapshot,
-  selectedId,
-  onSelect,
+  view,
+  onView,
 }: {
   snapshot: Snapshot | null;
-  selectedId: string | null;
-  onSelect: (id: string | null) => void;
+  view: View;
+  onView: (v: View) => void;
 }) {
+  const selectedId = view.kind === "issue" ? view.id : null;
+  const onSelect = (id: string) => onView({ kind: "issue", id });
   const runningById = useMemo(() => {
     const m = new Map<string, RunningRow>();
     for (const r of snapshot?.running ?? []) m.set(r.issue.id, r);
@@ -142,13 +142,27 @@ function Sidebar({
 
   return (
     <aside className="shrink-0 w-72 border-r border-border bg-panel/40 overflow-y-auto">
-      {!snapshot?.kanban?.loaded ? (
-        <div className="text-xs text-slate-500 p-4">loading…</div>
-      ) : groups.length === 0 ? (
-        <div className="text-xs text-slate-500 p-4">no issues</div>
-      ) : (
-        <nav className="py-2">
-          {groups.map((g) => (
+      <nav className="py-2">
+        <button
+          onClick={() => onView({ kind: "home" })}
+          className={`w-full text-left px-4 py-1.5 flex items-center gap-2 hover:bg-slate-800/40 ${
+            view.kind === "home"
+              ? "bg-slate-700/40 border-l-2 border-accent -ml-px"
+              : ""
+          }`}
+        >
+          <span className="text-slate-400 text-sm leading-none">⌂</span>
+          <span className="text-[12px] text-slate-200">Home</span>
+          <span className="text-[10px] text-slate-600 ml-auto">kanban</span>
+        </button>
+        <div className="my-2 border-t border-border/40" />
+
+        {!snapshot?.kanban?.loaded ? (
+          <div className="text-xs text-slate-500 px-4 py-2">loading…</div>
+        ) : groups.length === 0 ? (
+          <div className="text-xs text-slate-500 px-4 py-2">no issues</div>
+        ) : (
+          groups.map((g) => (
             <SidebarGroup
               key={g.key}
               label={g.label}
@@ -159,9 +173,9 @@ function Sidebar({
               selectedId={selectedId}
               onSelect={onSelect}
             />
-          ))}
-        </nav>
-      )}
+          ))
+        )}
+      </nav>
     </aside>
   );
 }
@@ -254,86 +268,209 @@ function SidebarItem({
 
 function Main({
   snapshot,
+  view,
   issue,
+  onView,
 }: {
   snapshot: Snapshot | null;
+  view: View;
   issue: Issue | null;
+  onView: (v: View) => void;
 }) {
   if (!snapshot) {
-    return <main className="flex-1 flex items-center justify-center text-slate-500 text-sm">connecting…</main>;
+    return (
+      <main className="flex-1 flex items-center justify-center text-slate-500 text-sm">
+        connecting…
+      </main>
+    );
+  }
+  if (view.kind === "home") {
+    return <KanbanView snapshot={snapshot} onView={onView} />;
   }
   if (!issue) {
-    return <Overview snapshot={snapshot} />;
+    return (
+      <main className="flex-1 flex items-center justify-center text-slate-500 text-sm">
+        issue not found in current snapshot
+      </main>
+    );
   }
   return <IssueDetail snapshot={snapshot} issue={issue} />;
 }
 
-function Overview({ snapshot }: { snapshot: Snapshot }) {
-  const totals = snapshot.codex_totals;
-  const counts = snapshot.kanban?.columns ?? [];
-  const totalIssues =
-    counts.reduce((a, c) => a + c.issues.length, 0) +
-    (snapshot.kanban?.unsorted?.length ?? 0);
+function KanbanView({
+  snapshot,
+  onView,
+}: {
+  snapshot: Snapshot;
+  onView: (v: View) => void;
+}) {
+  const runningById = useMemo(() => {
+    const m = new Map<string, RunningRow>();
+    for (const r of snapshot.running) m.set(r.issue.id, r);
+    return m;
+  }, [snapshot]);
+  const retryById = useMemo(() => {
+    const m = new Map<string, RetryRow>();
+    for (const r of snapshot.retrying) m.set(r.issue_id, r);
+    return m;
+  }, [snapshot]);
+
+  const board = snapshot.kanban;
+  if (!board?.loaded) {
+    return (
+      <main className="flex-1 flex items-center justify-center text-slate-500 text-sm">
+        waiting for first tracker fetch…
+      </main>
+    );
+  }
+  if (board.columns.length === 0) {
+    return (
+      <main className="flex-1 flex items-center justify-center text-slate-500 text-sm">
+        no columns configured (set tracker.active_states / terminal_states)
+      </main>
+    );
+  }
+
   return (
-    <main className="flex-1 overflow-y-auto">
-      <div className="max-w-2xl mx-auto px-8 py-12">
-        <h1 className="text-xl font-medium text-slate-100">Overview</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          {snapshot.paused
-            ? "Orchestrator is paused. Click an issue in the sidebar to inspect it, or resume to start dispatching."
-            : "Orchestrator is running. Pick an issue in the sidebar to see its live session."}
-        </p>
-
-        <div className="mt-8 grid grid-cols-3 gap-3">
-          <Tile
-            label="running"
-            value={`${snapshot.running.length} / ${snapshot.max_concurrent_agents}`}
+    <main className="flex-1 overflow-x-auto">
+      <div className="px-6 py-6 flex gap-4 min-w-min items-start">
+        {board.columns.map((col) => (
+          <KanbanColumn
+            key={col.state}
+            state={col.state}
+            issues={col.issues}
+            running={runningById}
+            retrying={retryById}
+            onOpenIssue={(id) => onView({ kind: "issue", id })}
           />
-          <Tile label="retrying" value={`${snapshot.retrying.length}`} />
-          <Tile label="issues" value={`${totalIssues}`} />
-          <Tile label="tokens" value={formatNumber(totals.total_tokens)} />
-          <Tile label="runtime" value={formatDuration(totals.seconds_running)} />
-          <Tile
-            label="poll"
-            value={`${Math.round(snapshot.poll_interval_ms / 1000)}s`}
+        ))}
+        {board.unsorted.length > 0 && (
+          <KanbanColumn
+            state="(unsorted)"
+            issues={board.unsorted}
+            running={runningById}
+            retrying={retryById}
+            onOpenIssue={(id) => onView({ kind: "issue", id })}
+            muted
           />
-        </div>
-
-        {counts.length > 0 && (
-          <div className="mt-8">
-            <h2 className="text-[10px] uppercase tracking-wider text-slate-500 mb-2">
-              by state
-            </h2>
-            <ul className="border border-border rounded divide-y divide-border/60 bg-panel/40">
-              {counts.map((c) => (
-                <li
-                  key={c.state}
-                  className="px-3 py-2 flex justify-between text-sm"
-                >
-                  <span className="text-slate-300">{prettyState(c.state)}</span>
-                  <span className="text-slate-500 tabular-nums">
-                    {c.issues.length}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
         )}
       </div>
     </main>
   );
 }
 
-function Tile({ label, value }: { label: string; value: string }) {
+function KanbanColumn({
+  state,
+  issues,
+  running,
+  retrying,
+  onOpenIssue,
+  muted = false,
+}: {
+  state: string;
+  issues: Issue[];
+  running: Map<string, RunningRow>;
+  retrying: Map<string, RetryRow>;
+  onOpenIssue: (id: string) => void;
+  muted?: boolean;
+}) {
   return (
-    <div className="border border-border rounded bg-panel/40 px-3 py-2">
-      <div className="text-[10px] uppercase tracking-wider text-slate-500">
-        {label}
-      </div>
-      <div className="text-base text-slate-100 tabular-nums mt-0.5">{value}</div>
-    </div>
+    <section
+      className={`panel flex-shrink-0 w-72 flex flex-col ${
+        muted ? "opacity-60" : ""
+      }`}
+    >
+      <header className="px-3 py-2 border-b border-border flex items-center justify-between">
+        <h2 className="text-xs uppercase tracking-wider text-slate-300 font-medium">
+          {prettyState(state)}
+        </h2>
+        <span className="text-xs text-slate-500 tabular-nums">{issues.length}</span>
+      </header>
+      <ol className="flex-1 overflow-y-auto p-2 space-y-2 max-h-[calc(100vh-200px)]">
+        {issues.length === 0 ? (
+          <li className="text-xs text-slate-600 px-2 py-6 text-center">empty</li>
+        ) : (
+          issues.map((issue) => (
+            <KanbanCard
+              key={issue.id}
+              issue={issue}
+              running={running.get(issue.id)}
+              retry={retrying.get(issue.id)}
+              onOpen={() => onOpenIssue(issue.id)}
+            />
+          ))
+        )}
+      </ol>
+    </section>
   );
 }
+
+function KanbanCard({
+  issue,
+  running,
+  retry,
+  onOpen,
+}: {
+  issue: Issue;
+  running?: RunningRow;
+  retry?: RetryRow;
+  onOpen: () => void;
+}) {
+  const live = !!running;
+  const queued = !!retry;
+  const ringCls = live
+    ? "ring-1 ring-accent/60"
+    : queued
+    ? "ring-1 ring-warn/40"
+    : "";
+  return (
+    <li
+      onClick={onOpen}
+      className={`bg-bg/60 border border-border rounded p-2.5 hover:border-slate-500 transition-colors cursor-pointer ${ringCls}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <a
+          href={issue.url ?? "#"}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="text-accent text-xs tabular-nums hover:underline"
+        >
+          {issue.identifier}
+        </a>
+        {live && <span className="pill pill-ok text-[9px]">running</span>}
+        {!live && queued && (
+          <span className="pill pill-warn text-[9px]">retry</span>
+        )}
+      </div>
+      <div className="text-sm text-slate-200 mt-1 leading-snug line-clamp-3">
+        {issue.title}
+      </div>
+      {issue.labels.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {issue.labels
+            .filter((l) => !l.startsWith("status:"))
+            .slice(0, 4)
+            .map((l) => (
+              <span
+                key={l}
+                className="pill pill-muted text-[9px] normal-case tracking-normal"
+              >
+                {l}
+              </span>
+            ))}
+        </div>
+      )}
+      {live && (
+        <div className="mt-2 pt-2 border-t border-border/60 text-[10px] text-slate-500 tabular-nums flex justify-between">
+          <span>turn {running!.turn_count}</span>
+          <span>{formatNumber(running!.tokens_total)} tok</span>
+        </div>
+      )}
+    </li>
+  );
+}
+
 
 function IssueDetail({ snapshot, issue }: { snapshot: Snapshot; issue: Issue }) {
   const log = useSessionLog(issue.id);
