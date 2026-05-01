@@ -46,23 +46,11 @@ export function App() {
 /* ---------- top bar ---------- */
 
 function TopBar({ conn, snapshot }: { conn: string; snapshot: Snapshot | null }) {
+  // Left side intentionally empty: macOS hidden-inset titlebar shows the
+  // traffic-light buttons there. Pad to keep controls clear of them.
   return (
-    <header className="shrink-0 border-b border-border bg-panel">
-      <div className="px-4 h-11 flex items-center gap-3">
-        <div className="flex items-center gap-2 select-none">
-          <span className="text-accent text-base leading-none">▲</span>
-          <span className="text-sm font-medium tracking-wide">meridian</span>
-          {snapshot?.repo && (
-            <a
-              href={`https://github.com/${snapshot.repo}`}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs text-slate-500 hover:text-slate-300"
-            >
-              {snapshot.repo}
-            </a>
-          )}
-        </div>
+    <header className="shrink-0 border-b border-border bg-panel app-drag">
+      <div className="pl-24 pr-4 h-11 flex items-center gap-3">
         <div className="flex-1" />
         <PauseToggle snapshot={snapshot} />
         <ConnPill state={conn} />

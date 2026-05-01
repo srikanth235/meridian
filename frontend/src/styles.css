@@ -15,4 +15,7 @@
   .pill-warn { @apply bg-warn/15 text-warn; }
   .pill-err { @apply bg-err/15 text-err; }
   .pill-muted { @apply bg-slate-700/40 text-slate-300; }
+  /* Make the macOS hidden-inset titlebar draggable, but keep buttons clickable. */
+  .app-drag { -webkit-app-region: drag; }
+  .app-drag button, .app-drag a { -webkit-app-region: no-drag; }
 }

@@ -23,7 +23,9 @@ app.commandLine.appendSwitch('remote-allow-origins', '*');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 let daemonProc = null;
+let daemonPort = null;
 let mainWindow = null;
+let startingUp = false;
 
 // ----- daemon binary + workflow resolution ---------------------------------
 
@@ -253,21 +255,33 @@ function buildMenu() {
 // ----- lifecycle ------------------------------------------------------------
 
 async function startup() {
-  let port, workflow, staticDir;
+  // Guard against double startup: whenReady() and activate() both fire on
+  // first macOS launch. Without this, two daemons get spawned and one ends up
+  // orphaned when the app quits.
+  if (startingUp) return;
+  if (daemonPort && BrowserWindow.getAllWindows().length > 0) return;
+  if (daemonPort && BrowserWindow.getAllWindows().length === 0) {
+    // Daemon is already up — just re-open a window pointed at it.
+    createWindow(daemonPort);
+    return;
+  }
+  startingUp = true;
   try {
-    port = await findFreePort();
-    workflow = resolveWorkflowPath();
-    staticDir = resolveStaticDir();
+    const port = await findFreePort();
+    const workflow = resolveWorkflowPath();
+    const staticDir = resolveStaticDir();
     daemonProc = spawnDaemon(port, workflow, staticDir);
     await waitForHealth(port);
+    daemonPort = port;
+    buildMenu();
+    createWindow(port);
   } catch (e) {
     console.error('[meridian] startup failed:', e);
     dialog.showErrorBox('Meridian failed to start', String(e.message || e));
     app.quit();
-    return;
+  } finally {
+    startingUp = false;
   }
-  buildMenu();
-  createWindow(port);
 }
 
 app.on('before-quit', () => {
