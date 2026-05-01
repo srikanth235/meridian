@@ -1,7 +1,7 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Path, State,
     },
     http::StatusCode,
     response::IntoResponse,
@@ -35,6 +35,7 @@ pub async fn serve(
         .route("/snapshot", get(get_snapshot))
         .route("/workflow", get(get_workflow))
         .route("/health", get(get_health))
+        .route("/sessions/:issue_id/log", get(get_session_log))
         .route("/ws", get(ws_upgrade));
 
     let mut app = Router::new()
@@ -73,6 +74,19 @@ async fn get_workflow(State(s): State<AppState>) -> Json<serde_json::Value> {
 
 async fn get_health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({"ok": true})))
+}
+
+async fn get_session_log(
+    State(s): State<AppState>,
+    Path(issue_id): Path<String>,
+) -> impl IntoResponse {
+    match s.orch.session_log(&issue_id) {
+        Some(log) => (StatusCode::OK, Json(serde_json::to_value(log).unwrap_or_default())),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "no log for issue"})),
+        ),
+    }
 }
 
 async fn ws_upgrade(

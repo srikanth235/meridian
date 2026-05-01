@@ -1,4 +1,4 @@
 pub mod orchestrator;
 pub mod snapshot;
 pub use orchestrator::{Orchestrator, OrchestratorHandle};
-pub use snapshot::Snapshot;
+pub use snapshot::{KanbanBoard, KanbanColumn, SessionLog, SessionLogEntry, Snapshot};

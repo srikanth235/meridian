@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSnapshot } from "./useSnapshot";
+import { useSessionLog } from "./useSessionLog";
 import { formatDuration, formatNumber, relTime } from "./format";
-import type { Issue, KanbanBoard, RetryRow, RunningRow, Snapshot } from "./types";
+import type { Issue, KanbanBoard, RetryRow, RunningRow, SessionLogEntry, Snapshot } from "./types";
 
 export function App() {
   const { snapshot, conn } = useSnapshot();
+  const [openIssue, setOpenIssue] = useState<Issue | null>(null);
   // Re-render every second so relative timestamps tick.
   const [, force] = useState(0);
   useEffect(() => {
@@ -12,11 +14,29 @@ export function App() {
     return () => clearInterval(id);
   }, []);
 
+  // Keep the open card's issue object fresh as the snapshot ticks.
+  const liveOpenIssue = useMemo(() => {
+    if (!openIssue || !snapshot) return openIssue;
+    for (const col of snapshot.kanban?.columns ?? []) {
+      const found = col.issues.find((i) => i.id === openIssue.id);
+      if (found) return found;
+    }
+    for (const i of snapshot.kanban?.unsorted ?? []) {
+      if (i.id === openIssue.id) return i;
+    }
+    return openIssue;
+  }, [openIssue, snapshot]);
+
   return (
     <div className="min-h-full flex flex-col">
       <Header conn={conn} snapshot={snapshot} />
-      <Board snapshot={snapshot} />
+      <Board snapshot={snapshot} onOpenIssue={setOpenIssue} />
       <Footer />
+      <Drawer
+        snapshot={snapshot}
+        issue={liveOpenIssue}
+        onClose={() => setOpenIssue(null)}
+      />
     </div>
   );
 }
@@ -67,7 +87,13 @@ function ConnPill({ state }: { state: string }) {
   return <span className={`pill ${cls}`}>{state}</span>;
 }
 
-function Board({ snapshot }: { snapshot: Snapshot | null }) {
+function Board({
+  snapshot,
+  onOpenIssue,
+}: {
+  snapshot: Snapshot | null;
+  onOpenIssue: (issue: Issue) => void;
+}) {
   const runningByIssueId = useMemo(() => {
     const m = new Map<string, RunningRow>();
     for (const r of snapshot?.running ?? []) m.set(r.issue.id, r);
@@ -113,6 +139,7 @@ function Board({ snapshot }: { snapshot: Snapshot | null }) {
             issues={col.issues}
             running={runningByIssueId}
             retrying={retryByIssueId}
+            onOpenIssue={onOpenIssue}
           />
         ))}
         {board.unsorted.length > 0 && (
@@ -121,6 +148,7 @@ function Board({ snapshot }: { snapshot: Snapshot | null }) {
             issues={board.unsorted}
             running={runningByIssueId}
             retrying={retryByIssueId}
+            onOpenIssue={onOpenIssue}
             muted
           />
         )}
@@ -134,12 +162,14 @@ function Column({
   issues,
   running,
   retrying,
+  onOpenIssue,
   muted = false,
 }: {
   state: string;
   issues: Issue[];
   running: Map<string, RunningRow>;
   retrying: Map<string, RetryRow>;
+  onOpenIssue: (issue: Issue) => void;
   muted?: boolean;
 }) {
   return (
@@ -162,6 +192,7 @@ function Column({
               issue={issue}
               running={running.get(issue.id)}
               retry={retrying.get(issue.id)}
+              onOpen={() => onOpenIssue(issue)}
             />
           ))
         )}
@@ -174,10 +205,12 @@ function Card({
   issue,
   running,
   retry,
+  onOpen,
 }: {
   issue: Issue;
   running?: RunningRow;
   retry?: RetryRow;
+  onOpen: () => void;
 }) {
   const live = !!running;
   const queued = !!retry;
@@ -187,12 +220,16 @@ function Card({
     ? "ring-1 ring-warn/40"
     : "";
   return (
-    <li className={`bg-bg/60 border border-border rounded p-2.5 hover:border-slate-500 transition-colors ${ringCls}`}>
+    <li
+      className={`bg-bg/60 border border-border rounded p-2.5 hover:border-slate-500 transition-colors cursor-pointer ${ringCls}`}
+      onClick={onOpen}
+    >
       <div className="flex items-start justify-between gap-2">
         <a
           href={issue.url ?? "#"}
           target="_blank"
           rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
           className="text-accent text-xs tabular-nums hover:underline"
         >
           {issue.identifier}
@@ -260,6 +297,160 @@ function prettyState(s: string): string {
   if (s === "open") return "Open";
   if (s.startsWith("status:")) return s.slice(7).replace(/-/g, " ");
   return s;
+}
+
+function Drawer({
+  snapshot,
+  issue,
+  onClose,
+}: {
+  snapshot: Snapshot | null;
+  issue: Issue | null;
+  onClose: () => void;
+}) {
+  const log = useSessionLog(issue?.id ?? null);
+  const running = useMemo(() => {
+    if (!issue || !snapshot) return undefined;
+    return snapshot.running.find((r) => r.issue.id === issue.id);
+  }, [issue, snapshot]);
+
+  // ESC closes the drawer.
+  useEffect(() => {
+    if (!issue) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [issue, onClose]);
+
+  if (!issue) return null;
+
+  return (
+    <div className="fixed inset-0 z-30 flex" onClick={onClose}>
+      <div className="flex-1 bg-black/50" />
+      <aside
+        className="w-[480px] max-w-[90vw] h-full bg-panel border-l border-border flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-4 py-3 border-b border-border flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <a
+              href={issue.url ?? "#"}
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent text-xs tabular-nums hover:underline"
+            >
+              {issue.identifier}
+            </a>
+            <h2 className="text-base text-slate-100 leading-tight mt-0.5">{issue.title}</h2>
+            <div className="mt-1 text-[10px] text-slate-500">
+              state: <span className="text-slate-300">{issue.state}</span>
+              {issue.updated_at && (
+                <> · updated {relTime(issue.updated_at)}</>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-slate-500 hover:text-slate-200 text-lg leading-none -mr-1"
+            aria-label="close"
+          >
+            ×
+          </button>
+        </header>
+
+        {issue.labels.length > 0 && (
+          <div className="px-4 pt-3 flex flex-wrap gap-1">
+            {issue.labels.map((l) => (
+              <span key={l} className="pill pill-muted text-[9px] normal-case tracking-normal">
+                {l}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {issue.description && (
+          <div className="px-4 pt-3 text-xs text-slate-400 max-h-32 overflow-y-auto whitespace-pre-wrap leading-relaxed border-b border-border/40 pb-3">
+            {issue.description}
+          </div>
+        )}
+
+        {running && (
+          <div className="px-4 py-2 bg-bg/40 border-b border-border/40 text-[10px] text-slate-400 grid grid-cols-3 gap-2 tabular-nums">
+            <div>turn {running.turn_count}</div>
+            <div>{formatNumber(running.tokens_total)} tok</div>
+            <div className="truncate">{running.last_event ?? "—"}</div>
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto p-3">
+          <LogList log={log} />
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function LogList({ log }: { log: ReturnType<typeof useSessionLog> }) {
+  if (log === undefined) {
+    return <div className="text-xs text-slate-500 text-center py-8">loading log…</div>;
+  }
+  if (log === null) {
+    return (
+      <div className="text-xs text-slate-500 text-center py-8">
+        no session log available (issue hasn't run, or log was evicted)
+      </div>
+    );
+  }
+  if (log.entries.length === 0) {
+    return <div className="text-xs text-slate-500 text-center py-8">no events yet</div>;
+  }
+  return (
+    <ol className="space-y-1.5">
+      {log.entries.map((e, i) => (
+        <LogRow key={i} entry={e} />
+      ))}
+    </ol>
+  );
+}
+
+function LogRow({ entry }: { entry: SessionLogEntry }) {
+  const [open, setOpen] = useState(false);
+  const tone = toneFor(entry.kind);
+  return (
+    <li className="text-[11px] leading-snug">
+      <div className="flex items-baseline gap-2">
+        <span className="text-slate-600 tabular-nums shrink-0 w-12">{relTime(entry.at)}</span>
+        <span className={`shrink-0 ${tone}`}>{entry.kind}</span>
+      </div>
+      <div className="ml-14 text-slate-300 break-words">{entry.summary}</div>
+      {entry.detail !== null && entry.detail !== undefined && (
+        <div className="ml-14 mt-1">
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="text-[10px] text-slate-600 hover:text-slate-400"
+          >
+            {open ? "hide raw" : "raw"}
+          </button>
+          {open && (
+            <pre className="mt-1 bg-black/40 p-2 rounded overflow-x-auto text-[10px] text-slate-400">
+              {JSON.stringify(entry.detail, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function toneFor(kind: string): string {
+  if (kind.includes("failed") || kind.includes("error") || kind === "malformed")
+    return "text-err";
+  if (kind === "turn_completed" || kind === "session_started") return "text-ok";
+  if (kind === "agent_message_delta") return "text-accent/80";
+  if (kind.startsWith("approval")) return "text-warn";
+  return "text-slate-500";
 }
 
 function Footer() {

@@ -40,6 +40,26 @@ pub struct KanbanColumn {
     pub issues: Vec<Issue>,
 }
 
+/// Single entry in a per-issue session log (used by `/api/sessions/{id}/log`).
+/// Coalesces successive `AgentMessageDelta`s into a single growing message
+/// entry so the UI doesn't get flooded one delta at a time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionLogEntry {
+    pub at: DateTime<Utc>,
+    pub kind: String,
+    pub summary: String,
+    /// Optional raw payload for power-user inspection (collapsed in the UI).
+    pub detail: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionLog {
+    pub issue_id: String,
+    pub entries: Vec<SessionLogEntry>,
+    /// True when this issue is currently in `running` (i.e. log is live).
+    pub active: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunningRow {
     pub issue: Issue,

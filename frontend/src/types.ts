@@ -47,6 +47,19 @@ export interface KanbanColumn {
   issues: Issue[];
 }
 
+export interface SessionLogEntry {
+  at: string;
+  kind: string;
+  summary: string;
+  detail: unknown | null;
+}
+
+export interface SessionLog {
+  issue_id: string;
+  entries: SessionLogEntry[];
+  active: boolean;
+}
+
 export interface KanbanBoard {
   columns: KanbanColumn[];
   unsorted: Issue[];

@@ -14,7 +14,15 @@ use meridian_workspace::WorkspaceManager;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use crate::snapshot::{KanbanBoard, KanbanColumn, RetryRow, RunningRow, Snapshot, TotalsRow};
+use std::collections::VecDeque;
+
+use crate::snapshot::{
+    KanbanBoard, KanbanColumn, RetryRow, RunningRow, SessionLog, SessionLogEntry, Snapshot,
+    TotalsRow,
+};
+
+const SESSION_LOG_CAP: usize = 500;
+const SESSION_LOG_TTL_SECS: i64 = 30 * 60;
 
 const CONTINUATION_DELAY_MS: u64 = 1_000;
 const FAILURE_BASE_DELAY_MS: u64 = 10_000;
@@ -34,6 +42,9 @@ impl OrchestratorHandle {
     }
     pub fn poke(&self) {
         self.inner.events.send(SnapshotEvent::StateChanged).ok();
+    }
+    pub fn session_log(&self, issue_id: &str) -> Option<SessionLog> {
+        self.inner.session_log(issue_id)
     }
 }
 
@@ -57,6 +68,10 @@ struct OrchestratorInner {
     events: broadcast::Sender<SnapshotEvent>,
     /// Latest tracker fetch, partitioned for the kanban UI.
     board: Mutex<KanbanBoard>,
+    /// Per-issue session event logs, capped at SESSION_LOG_CAP entries each.
+    /// Retained for SESSION_LOG_TTL_SECS after the run finishes so the UI can
+    /// inspect what happened on a recently-closed issue.
+    session_logs: Mutex<HashMap<String, VecDeque<SessionLogEntry>>>,
 }
 
 impl Orchestrator {
@@ -80,6 +95,7 @@ impl Orchestrator {
             workflow,
             events: tx,
             board: Mutex::new(KanbanBoard::default()),
+            session_logs: Mutex::new(HashMap::new()),
         });
         Self { inner }
     }
@@ -145,6 +161,7 @@ impl OrchestratorInner {
         }
 
         self.reconcile(&cfg).await;
+        self.evict_stale_logs();
 
         if let Err(e) = cfg.preflight() {
             warn!(error = %e, "dispatch preflight failed; skipping dispatch");
@@ -396,6 +413,11 @@ impl OrchestratorInner {
     }
 
     fn apply_agent_event(&self, issue_id: &str, ev: AgentEvent) {
+        // Derive the log entry shape before the match consumes `ev`. Returns
+        // (kind, summary, detail, is_delta).
+        let log_summary = describe_event(&ev);
+        self.push_log_entry(issue_id, log_summary);
+
         let mut s = self.state.lock();
         let mut delta: (u64, u64, u64) = (0, 0, 0);
         match ev {
@@ -686,6 +708,64 @@ impl OrchestratorInner {
         }
     }
 
+    fn push_log_entry(
+        &self,
+        issue_id: &str,
+        log_summary: (String, String, Option<serde_json::Value>),
+    ) {
+        let (kind, summary, detail) = log_summary;
+        let now = Utc::now();
+        let mut logs = self.session_logs.lock();
+        let buf = logs
+            .entry(issue_id.to_string())
+            .or_insert_with(VecDeque::new);
+
+        // Coalesce successive AgentMessageDelta entries into a single growing
+        // entry so the UI doesn't see hundreds of one-token rows.
+        if kind == "agent_message_delta" {
+            if let Some(last) = buf.back_mut() {
+                if last.kind == "agent_message_delta" {
+                    last.summary.push_str(&summary);
+                    last.at = now;
+                    return;
+                }
+            }
+        }
+
+        buf.push_back(SessionLogEntry { at: now, kind, summary, detail });
+        while buf.len() > SESSION_LOG_CAP {
+            buf.pop_front();
+        }
+    }
+
+    fn session_log(&self, issue_id: &str) -> Option<SessionLog> {
+        let active = self.state.lock().running.contains_key(issue_id);
+        let logs = self.session_logs.lock();
+        let entries = logs.get(issue_id).cloned()?;
+        Some(SessionLog {
+            issue_id: issue_id.to_string(),
+            entries: entries.into_iter().collect(),
+            active,
+        })
+    }
+
+    /// Best-effort eviction of stale session logs. Called from the tick loop
+    /// so the map can't grow unbounded for issues that never get re-fetched.
+    fn evict_stale_logs(&self) {
+        let active: HashSet<String> = self.state.lock().running.keys().cloned().collect();
+        let cutoff = Utc::now() - chrono::Duration::seconds(SESSION_LOG_TTL_SECS);
+        let mut logs = self.session_logs.lock();
+        logs.retain(|id, entries| {
+            if active.contains(id) {
+                return true;
+            }
+            entries
+                .back()
+                .map(|e| e.at >= cutoff)
+                .unwrap_or(false)
+        });
+    }
+
     fn snapshot(&self) -> Snapshot {
         let s = self.state.lock();
         let now = Utc::now();
@@ -750,6 +830,87 @@ impl OrchestratorInner {
             repo,
         }
     }
+}
+
+/// Produce a `(kind, summary, detail)` triple suitable for the session log.
+/// `kind == "agent_message_delta"` is special-cased by `push_log_entry` to
+/// coalesce successive deltas into a single growing entry.
+fn describe_event(ev: &AgentEvent) -> (String, String, Option<serde_json::Value>) {
+    use AgentEvent::*;
+    match ev {
+        SessionStarted { thread_id, turn_id, .. } => (
+            "session_started".into(),
+            format!("thread {} · turn {}", short_id(thread_id), short_id(turn_id)),
+            None,
+        ),
+        StartupFailed { error, .. } => ("startup_failed".into(), error.clone(), None),
+        TurnCompleted { usage, .. } => (
+            "turn_completed".into(),
+            usage
+                .as_ref()
+                .map(|u| format!("{} tokens total", u.total_tokens))
+                .unwrap_or_else(|| "no usage".into()),
+            None,
+        ),
+        TurnFailed { error, .. } => ("turn_failed".into(), error.clone(), None),
+        TurnCancelled { .. } => ("turn_cancelled".into(), String::new(), None),
+        TurnEndedWithError { error, .. } => ("turn_ended_with_error".into(), error.clone(), None),
+        TurnInputRequired { .. } => (
+            "turn_input_required".into(),
+            "agent stopped, awaiting input".into(),
+            None,
+        ),
+        ApprovalAutoApproved { kind, .. } => {
+            ("approval_auto_approved".into(), kind.clone(), None)
+        }
+        UnsupportedToolCall { tool, .. } => ("unsupported_tool_call".into(), tool.clone(), None),
+        Notification { payload, .. } => (
+            "notification".into(),
+            payload
+                .get("method")
+                .and_then(|v| v.as_str())
+                .unwrap_or("notification")
+                .into(),
+            Some(payload.clone()),
+        ),
+        OtherMessage { payload, .. } => (
+            "other_message".into(),
+            payload
+                .get("method")
+                .and_then(|v| v.as_str())
+                .unwrap_or("message")
+                .into(),
+            Some(payload.clone()),
+        ),
+        Malformed { line, .. } => (
+            "malformed".into(),
+            line.chars().take(160).collect::<String>(),
+            None,
+        ),
+        TokenUsageUpdated { usage, .. } => (
+            "token_usage_updated".into(),
+            format!(
+                "in {} · out {} · total {}",
+                usage.input_tokens, usage.output_tokens, usage.total_tokens
+            ),
+            None,
+        ),
+        RateLimitsUpdated { .. } => (
+            "rate_limits_updated".into(),
+            "rate limits payload".into(),
+            None,
+        ),
+        AgentMessageDelta { delta, .. } => ("agent_message_delta".into(), delta.clone(), None),
+        ItemEvent { method, kind, payload, .. } => (
+            "item_event".into(),
+            format!("{method} · {kind}"),
+            Some(payload.clone()),
+        ),
+    }
+}
+
+fn short_id(s: &str) -> String {
+    s.chars().take(8).collect()
 }
 
 fn build_board(cfg: &ServiceConfig, issues: &[Issue]) -> KanbanBoard {
