@@ -51,6 +51,13 @@ pub struct PollingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     pub root: PathBuf,
+    /// Whether to delete the per-issue workspace directory when the issue
+    /// transitions to a terminal state (or appears in startup terminal
+    /// cleanup). Spec §8.5/§8.6 lists deletion as the default behavior, but
+    /// it makes the Codex desktop app unable to group sessions by cwd
+    /// (vanished projects don't render). Set to `false` to keep workspaces
+    /// around for browsing/debugging. Default: `false`.
+    pub delete_on_terminal: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -79,6 +86,13 @@ pub struct CodexConfig {
     pub turn_timeout_ms: u64,
     pub read_timeout_ms: u64,
     pub stall_timeout_ms: i64,
+    /// Workaround for Codex desktop sidebar visibility (see WORKFLOW.md notes).
+    /// `codex app-server` over stdio always tags sessions as `source: vscode`,
+    /// which the desktop app filters out of its sidebar. When this is set,
+    /// Meridian rewrites the `source` field in line 1 of the rollout file
+    /// after the session ends. Common values: `cli`, `exec`. Set to `null`
+    /// to disable.
+    pub session_source_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -127,6 +141,10 @@ impl ServiceConfig {
             .unwrap_or_else(default_workspace_root);
         let workspace = WorkspaceConfig {
             root: workspace_root,
+            delete_on_terminal: workspace_obj
+                .get("delete_on_terminal")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         };
 
         let hooks_obj = obj(&root, "hooks");
@@ -173,6 +191,11 @@ impl ServiceConfig {
                 .get("stall_timeout_ms")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(DEFAULT_STALL_TIMEOUT_MS as i64),
+            session_source_override: match codex_obj.get("session_source_override") {
+                None => Some("cli".to_string()),
+                Some(Value::Null) => None,
+                Some(v) => v.as_str().map(|s| s.to_string()).or(None),
+            },
         };
 
         let worker_obj = obj(&root, "worker");

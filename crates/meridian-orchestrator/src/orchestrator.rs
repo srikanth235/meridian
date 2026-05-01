@@ -116,8 +116,15 @@ impl OrchestratorInner {
             .await
         {
             Ok(issues) => {
-                for issue in issues {
-                    self.workspace.remove(&issue.identifier, &cfg.hooks).await;
+                if cfg.workspace.delete_on_terminal {
+                    for issue in issues {
+                        self.workspace.remove(&issue.identifier, &cfg.hooks).await;
+                    }
+                } else {
+                    debug!(
+                        count = issues.len(),
+                        "startup: workspace.delete_on_terminal=false, keeping terminal workspaces"
+                    );
                 }
             }
             Err(e) => warn!(error = %e, "startup terminal cleanup failed"),
@@ -425,16 +432,18 @@ impl OrchestratorInner {
                     if let Some(live) = entry.session.as_mut() {
                         live.last_codex_event = Some("agent_message".into());
                         live.last_codex_timestamp = Some(timestamp);
-                        // Keep last ~200 chars of streaming text for the UI snapshot.
+                        // Keep last ~200 *characters* (not bytes — must respect
+                        // UTF-8 boundaries) of streaming text for the UI snapshot.
                         let mut buf = live
                             .last_codex_message
                             .as_ref()
                             .and_then(|v| v.as_str().map(|s| s.to_string()))
                             .unwrap_or_default();
                         buf.push_str(&delta);
-                        if buf.len() > 200 {
-                            let cut = buf.len() - 200;
-                            buf = buf[cut..].to_string();
+                        let char_count = buf.chars().count();
+                        if char_count > 200 {
+                            let skip = char_count - 200;
+                            buf = buf.chars().skip(skip).collect();
                         }
                         live.last_codex_message = Some(serde_json::Value::String(buf));
                     }
@@ -636,14 +645,16 @@ impl OrchestratorInner {
             }
         }
         for id in to_terminal {
-            info!(issue_id = %id, "issue is terminal; cancelling and cleaning workspace");
+            info!(issue_id = %id, "issue is terminal; cancelling worker");
             if let Some(c) = self.cancels.lock().remove(&id) {
                 let _ = c.send(());
             }
-            // Clean workspace using a snapshot of the identifier.
-            let identifier = self.state.lock().running.get(&id).map(|e| e.issue.identifier.clone());
-            if let Some(ident) = identifier {
-                self.workspace.remove(&ident, &cfg.hooks).await;
+            if cfg.workspace.delete_on_terminal {
+                // Clean workspace using a snapshot of the identifier.
+                let identifier = self.state.lock().running.get(&id).map(|e| e.issue.identifier.clone());
+                if let Some(ident) = identifier {
+                    self.workspace.remove(&ident, &cfg.hooks).await;
+                }
             }
         }
         for id in to_other {

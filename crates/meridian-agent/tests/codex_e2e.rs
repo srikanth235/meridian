@@ -60,6 +60,7 @@ async fn ping_pong_against_real_codex() {
         turn_timeout_ms: 120_000,
         read_timeout_ms: 5_000,
         stall_timeout_ms: 0,
+        session_source_override: Some("cli".into()),
     };
     let issue = issue();
 

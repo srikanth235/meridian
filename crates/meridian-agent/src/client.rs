@@ -99,6 +99,13 @@ async fn run_session_inner(mut req: SessionRequest<'_>) -> Result<RunOutcome, Ag
         .and_then(|v| v.as_str())
         .ok_or_else(|| AgentError::StartupFailed("thread/start missing thread.id".into()))?
         .to_string();
+    // Capture rollout file path for the post-session source override (Codex
+    // desktop sidebar workaround — see CodexConfig::session_source_override).
+    let rollout_path = thread_resp
+        .get("thread")
+        .and_then(|t| t.get("path"))
+        .and_then(|v| v.as_str())
+        .map(|s| std::path::PathBuf::from(s));
 
     let first_prompt = (req.render_first_prompt)()
         .map_err(|e| AgentError::StartupFailed(format!("render prompt: {e}")))?;
@@ -164,17 +171,91 @@ async fn run_session_inner(mut req: SessionRequest<'_>) -> Result<RunOutcome, Ag
             TurnEnd::Completed => continue,
             TurnEnd::Failed(msg) => {
                 let _ = terminate(&mut child).await;
+                patch_rollout_source(rollout_path.as_deref(), req.codex).await;
                 return Ok(RunOutcome::Failed(msg));
             }
             TurnEnd::Cancelled => {
                 let _ = terminate(&mut child).await;
+                patch_rollout_source(rollout_path.as_deref(), req.codex).await;
                 return Ok(RunOutcome::TurnsExhausted { turns: turns_done });
             }
         }
     }
 
     let _ = terminate(&mut child).await;
+    patch_rollout_source(rollout_path.as_deref(), req.codex).await;
     Ok(RunOutcome::TurnsExhausted { turns: turns_done })
+}
+
+/// Workaround: rewrite the `source` field in line 1 of the Codex rollout file
+/// so the session shows up in the Codex desktop sidebar. `codex app-server`
+/// over stdio always tags sessions as `source: vscode`, which the desktop
+/// filters out. We rewrite to whatever `codex.session_source_override` says
+/// (default `cli`). No-op if the override is `None` or the path is missing.
+async fn patch_rollout_source(path: Option<&std::path::Path>, codex: &CodexConfig) {
+    let Some(path) = path else { return };
+    let Some(target) = codex.session_source_override.as_deref() else {
+        return;
+    };
+    if target.is_empty() {
+        return;
+    }
+    let target = target.to_string();
+    let target_for_log = target.clone();
+    let path = path.to_path_buf();
+    // Run on a blocking thread — small synchronous file ops.
+    let res = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let body = std::fs::read_to_string(&path)?;
+        let mut lines: Vec<&str> = body.split_inclusive('\n').collect();
+        if lines.is_empty() {
+            return Ok(());
+        }
+        let first = lines[0].trim_end_matches('\n');
+        let mut meta: serde_json::Value = match serde_json::from_str(first) {
+            Ok(v) => v,
+            Err(_) => return Ok(()), // not JSON; bail silently
+        };
+        // Update payload.source if present.
+        let changed = meta
+            .get_mut("payload")
+            .and_then(|p| p.as_object_mut())
+            .map(|obj| {
+                let cur = obj
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                if cur.as_deref() == Some(target.as_str()) {
+                    false
+                } else {
+                    obj.insert(
+                        "source".to_string(),
+                        serde_json::Value::String(target.clone()),
+                    );
+                    true
+                }
+            })
+            .unwrap_or(false);
+        if !changed {
+            return Ok(());
+        }
+        let mut new_first = serde_json::to_string(&meta).unwrap_or_else(|_| first.to_string());
+        new_first.push('\n');
+        let owned: String = new_first;
+        lines[0] = owned.as_str();
+        let joined: String = lines.concat();
+        // Atomic-ish write via tmp+rename.
+        let mut tmp = path.clone();
+        tmp.as_mut_os_string().push(".tmp");
+        std::fs::write(&tmp, joined)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    })
+    .await;
+    match res {
+        Ok(Ok(())) => debug!(target: "codex", "patched rollout source -> {target_for_log}"),
+        Ok(Err(e)) => warn!(error = %e, "failed to patch rollout source"),
+        Err(e) => warn!(error = %e, "rollout patch task panicked"),
+    }
 }
 
 enum TurnEnd {
