@@ -1,0 +1,20 @@
+[package]
+name = "meridian"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "meridian"
+path = "src/main.rs"
+
+[dependencies]
+meridian-config.workspace = true
+meridian-tracker.workspace = true
+meridian-orchestrator.workspace = true
+meridian-server.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+anyhow.workspace = true

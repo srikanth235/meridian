@@ -1,0 +1,15 @@
+[package]
+name = "meridian-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meridian-core.workspace = true
+meridian-config.workspace = true
+tokio = { workspace = true, features = ["fs", "process", "time", "rt"] }
+tracing.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"

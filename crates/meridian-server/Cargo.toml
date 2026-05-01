@@ -1,0 +1,20 @@
+[package]
+name = "meridian-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meridian-core.workspace = true
+meridian-config.workspace = true
+meridian-orchestrator.workspace = true
+meridian-tracker.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+futures.workspace = true
+chrono.workspace = true

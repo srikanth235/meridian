@@ -1,0 +1,25 @@
+[package]
+name = "meridian-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "sync", "rt"] }
+tracing.workspace = true
+notify.workspace = true
+liquid.workspace = true
+liquid-core.workspace = true
+parking_lot.workspace = true
+dirs.workspace = true
+once_cell.workspace = true
+regex.workspace = true
+meridian-core.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"
