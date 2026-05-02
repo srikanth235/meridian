@@ -18,12 +18,25 @@ pub enum IssueState {
     Other,
 }
 
+/// Task kind constants. The dispatched unit is uniformly an [`Issue`], but
+/// `kind` switches the agent's behaviour: `"issue"` runs the implement-an-issue
+/// flow, `"pr_review"` runs the review-a-pull-request flow (see WORKFLOW.md).
+pub mod kind {
+    pub const ISSUE: &str = "issue";
+    pub const PR_REVIEW: &str = "pr_review";
+}
+
+fn default_kind() -> String {
+    kind::ISSUE.to_string()
+}
+
 /// Normalized issue record (spec §4.1.1).
 ///
 /// `id` is globally unique across repos when multi-repo is configured: the
-/// GitHub adapter sets it to `<owner>/<name>/<number>`. `identifier` is the
-/// short display form (e.g. `#42`) and `repo` carries the source (`owner/name`)
-/// so the UI can disambiguate when aggregating across projects.
+/// GitHub adapter sets it to `<owner>/<name>/<number>` for issues and
+/// `<owner>/<name>/pr/<number>` for PR-review tasks. `identifier` is the
+/// short display form (e.g. `#42`, `PR #42`) and `repo` carries the source
+/// (`owner/name`) so the UI can disambiguate when aggregating across projects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Issue {
     pub id: String,
@@ -43,6 +56,14 @@ pub struct Issue {
     /// Source repository (`owner/name`) when the tracker has a notion of it.
     #[serde(default)]
     pub repo: Option<String>,
+    /// Task kind — `"issue"` (default) or `"pr_review"`. Bound into the
+    /// prompt template as `task.kind` to switch agent behaviour.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// Author login when the upstream record carries one (currently only
+    /// populated for PR-review tasks). Surfaced as `pr.author` in templates.
+    #[serde(default)]
+    pub author: Option<String>,
 }
 
 impl Issue {

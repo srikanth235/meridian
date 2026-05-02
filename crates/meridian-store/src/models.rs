@@ -201,6 +201,10 @@ pub struct IssueRecord {
     pub updated_at: DateTime<Utc>,
     pub labels: Vec<String>,
     pub blocked_by: Vec<BlockerRef>,
+    /// Task kind — `"issue"` (default) or `"pr_review"`.
+    pub kind: String,
+    /// Upstream author login (currently only set for PR-review rows).
+    pub author: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +233,9 @@ pub struct NewIssue {
     pub branch_name: Option<String>,
     pub url: Option<String>,
     pub due_date: Option<DateTime<Utc>>,
+    /// Task kind — empty string is treated as `"issue"`.
+    pub kind: Option<String>,
+    pub author: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

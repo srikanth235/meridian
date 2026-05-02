@@ -57,7 +57,23 @@ pub struct TrackerConfig {
     /// `active_states ++ terminal_states` in declaration order.
     #[serde(default)]
     pub columns: Vec<String>,
+    /// When true and `kind == "github"`, the tracker also fetches open PRs
+    /// pending review and surfaces them as tasks with `kind = "pr_review"`.
+    /// PR-specific synthetic states are auto-appended to `active_states` and
+    /// `terminal_states` (see [`PR_PENDING_REVIEW`], [`PR_REVIEWED`],
+    /// [`PR_APPROVED`], [`PR_MERGED`], [`PR_CLOSED`]). Defaults to `false`.
+    #[serde(default)]
+    pub review_prs: bool,
 }
+
+/// Synthetic PR-review state names. Stored as `Issue.state` and matched
+/// against `active_states` / `terminal_states` by the orchestrator's existing
+/// classify logic.
+pub const PR_PENDING_REVIEW: &str = "pr:pending-review";
+pub const PR_REVIEWED: &str = "pr:reviewed";
+pub const PR_APPROVED: &str = "pr:approved";
+pub const PR_MERGED: &str = "pr:merged";
+pub const PR_CLOSED: &str = "pr:closed";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PollingConfig {
@@ -150,14 +166,28 @@ impl ServiceConfig {
             } else {
                 (default_active_states_github, default_terminal_states_github)
             };
+        let review_prs = tracker_obj
+            .get("review_prs")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let mut active_states =
+            string_list(&tracker_obj, "active_states").unwrap_or_else(default_active);
+        let mut terminal_states =
+            string_list(&tracker_obj, "terminal_states").unwrap_or_else(default_terminal);
+        if review_prs {
+            extend_unique(&mut active_states, PR_PENDING_REVIEW);
+            for s in [PR_REVIEWED, PR_APPROVED, PR_MERGED, PR_CLOSED] {
+                extend_unique(&mut terminal_states, s);
+            }
+        }
         let tracker = TrackerConfig {
             repos,
             db_path: string(&tracker_obj, "db_path").map(|s| expand_path(&s)),
-            active_states: string_list(&tracker_obj, "active_states").unwrap_or_else(default_active),
-            terminal_states: string_list(&tracker_obj, "terminal_states")
-                .unwrap_or_else(default_terminal),
+            active_states,
+            terminal_states,
             columns: string_list(&tracker_obj, "columns").unwrap_or_default(),
             kind: tracker_kind,
+            review_prs,
         };
 
         let polling_obj = obj(&root, "polling");
@@ -413,6 +443,12 @@ fn default_workspace_root() -> PathBuf {
     std::env::temp_dir().join("meridian_workspaces")
 }
 
+fn extend_unique(out: &mut Vec<String>, val: &str) {
+    if !out.iter().any(|s| s.eq_ignore_ascii_case(val)) {
+        out.push(val.to_string());
+    }
+}
+
 fn default_active_states_github() -> Vec<String> {
     vec!["status:todo".into(), "status:in-progress".into()]
 }
@@ -548,5 +584,39 @@ mod tests {
     fn invalid_hook_timeout_falls_back() {
         let cfg = ServiceConfig::from_raw(&json!({"hooks": {"timeout_ms": 0}}));
         assert_eq!(cfg.hooks.timeout_ms, DEFAULT_HOOK_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn review_prs_extends_states_with_pr_synthetic() {
+        let cfg = ServiceConfig::from_raw(&json!({
+            "tracker": {
+                "kind": "github",
+                "repo": "o/r",
+                "active_states": ["status:todo"],
+                "terminal_states": ["closed"],
+                "review_prs": true,
+            }
+        }));
+        assert!(cfg.tracker.review_prs);
+        assert!(cfg.tracker.active_states.iter().any(|s| s == PR_PENDING_REVIEW));
+        for s in [PR_REVIEWED, PR_APPROVED, PR_MERGED, PR_CLOSED] {
+            assert!(
+                cfg.tracker.terminal_states.iter().any(|t| t == s),
+                "missing terminal state {s} after review_prs extension"
+            );
+        }
+        // Pre-existing user-configured states are preserved.
+        assert!(cfg.tracker.active_states.iter().any(|s| s == "status:todo"));
+        assert!(cfg.tracker.terminal_states.iter().any(|s| s == "closed"));
+    }
+
+    #[test]
+    fn review_prs_off_keeps_states_clean() {
+        let cfg = ServiceConfig::from_raw(&json!({
+            "tracker": {"kind": "github", "repo": "o/r"}
+        }));
+        assert!(!cfg.tracker.review_prs);
+        assert!(!cfg.tracker.active_states.iter().any(|s| s.starts_with("pr:")));
+        assert!(!cfg.tracker.terminal_states.iter().any(|s| s.starts_with("pr:")));
     }
 }

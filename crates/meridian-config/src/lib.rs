@@ -12,7 +12,8 @@ pub mod reload;
 
 pub use config::{
     AgentConfig, CodexConfig, HooksConfig, PollingConfig, ServerConfig, ServiceConfig,
-    TrackerConfig, WorkerConfig, WorkspaceConfig,
+    TrackerConfig, WorkerConfig, WorkspaceConfig, PR_APPROVED, PR_CLOSED, PR_MERGED,
+    PR_PENDING_REVIEW, PR_REVIEWED,
 };
 pub use error::ConfigError;
 pub use loader::{load_workflow, parse_workflow, WorkflowDefinition};
