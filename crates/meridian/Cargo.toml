@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 meridian-config.workspace = true
 meridian-tracker.workspace = true
+meridian-store.workspace = true
 meridian-orchestrator.workspace = true
 meridian-server.workspace = true
 tokio = { workspace = true, features = ["full"] }

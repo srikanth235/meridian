@@ -14,9 +14,10 @@ use uuid::Uuid;
 
 use crate::error::StoreError;
 use crate::models::{
-    Attachment, BlockerRef, Comment, Cycle, IssueRecord, IssueRelation, IssueRelationType, Label,
-    LiveSessionRecord, NewIssue, Project, ProjectState, RetryEntryRecord, RunAttemptRecord,
-    RunAttemptStatus, SessionEventRecord, Team, User, Workspace, WorkflowState, WorkflowStateType,
+    Attachment, BlockerRef, Comment, Cycle, HarnessRecord, IssueRecord, IssueRelation,
+    IssueRelationType, Label, LiveSessionRecord, NewIssue, Project, ProjectState, RepoRecord,
+    RetryEntryRecord, RunAttemptRecord, RunAttemptStatus, SessionEventRecord, Team, User,
+    Workspace, WorkflowState, WorkflowStateType,
 };
 use crate::schema;
 
@@ -781,6 +782,237 @@ impl Store {
         })
         .await
     }
+
+    // -------------------- Harnesses --------------------
+
+    /// Upsert one harness's catalog/probe metadata. Existing `concurrency` is
+    /// preserved across upserts so the user's slider value isn't clobbered by
+    /// a refresh.
+    pub async fn upsert_harness_probe(
+        &self,
+        id: &str,
+        name: &str,
+        binary: &str,
+        color: &str,
+        default_concurrency: i64,
+        available: bool,
+        version: Option<&str>,
+        last_seen_at: Option<DateTime<Utc>>,
+    ) -> Result<(), StoreError> {
+        let id = id.to_string();
+        let name = name.to_string();
+        let binary = binary.to_string();
+        let color = color.to_string();
+        let version = version.map(|s| s.to_string());
+        self.run(move |conn| {
+            conn.execute(
+                "INSERT INTO harness (id, name, binary, color, concurrency, available, version, last_seen_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    binary = excluded.binary,
+                    color = excluded.color,
+                    available = excluded.available,
+                    version = excluded.version,
+                    last_seen_at = excluded.last_seen_at",
+                rusqlite::params![
+                    id,
+                    name,
+                    binary,
+                    color,
+                    default_concurrency,
+                    available as i64,
+                    version,
+                    last_seen_at,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Mark every harness whose id is NOT in `present_ids` as unavailable.
+    /// Called after a refresh sweep to flip stale rows offline.
+    pub async fn mark_missing_harnesses_unavailable(
+        &self,
+        present_ids: &[String],
+    ) -> Result<(), StoreError> {
+        let present_ids = present_ids.to_vec();
+        self.run(move |conn| {
+            if present_ids.is_empty() {
+                conn.execute("UPDATE harness SET available = 0", [])?;
+                return Ok(());
+            }
+            let placeholders = (1..=present_ids.len())
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("UPDATE harness SET available = 0 WHERE id NOT IN ({placeholders})");
+            conn.execute(&sql, params_from_iter(present_ids.iter()))?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn list_harnesses(&self) -> Result<Vec<HarnessRecord>, StoreError> {
+        self.run(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, binary, color, concurrency, available, version, last_seen_at
+                 FROM harness ORDER BY name",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(HarnessRecord {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        binary: row.get(2)?,
+                        color: row.get(3)?,
+                        concurrency: row.get(4)?,
+                        available: row.get::<_, i64>(5)? != 0,
+                        version: row.get(6)?,
+                        last_seen_at: row.get(7)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn set_harness_concurrency(
+        &self,
+        id: &str,
+        concurrency: i64,
+    ) -> Result<(), StoreError> {
+        let id = id.to_string();
+        self.run(move |conn| {
+            let n = conn.execute(
+                "UPDATE harness SET concurrency = ?2 WHERE id = ?1",
+                rusqlite::params![id, concurrency.max(0)],
+            )?;
+            if n == 0 {
+                return Err(StoreError::NotFound(format!("harness {id}")));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    // -------------------- Repos --------------------
+
+    /// Upsert one repo's metadata from a `gh repo list` row. `connected` /
+    /// `connected_at` are NEVER touched here — those are user state.
+    pub async fn upsert_repo_metadata(
+        &self,
+        rec: &RepoRecord,
+    ) -> Result<(), StoreError> {
+        let rec = rec.clone();
+        self.run(move |conn| {
+            conn.execute(
+                "INSERT INTO repo (
+                    slug, description, url, default_branch, primary_language,
+                    is_private, is_archived, updated_at, connected, connected_at, last_synced_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(slug) DO UPDATE SET
+                    description = excluded.description,
+                    url = excluded.url,
+                    default_branch = excluded.default_branch,
+                    primary_language = excluded.primary_language,
+                    is_private = excluded.is_private,
+                    is_archived = excluded.is_archived,
+                    updated_at = excluded.updated_at,
+                    last_synced_at = excluded.last_synced_at",
+                rusqlite::params![
+                    rec.slug,
+                    rec.description,
+                    rec.url,
+                    rec.default_branch,
+                    rec.primary_language,
+                    rec.is_private as i64,
+                    rec.is_archived as i64,
+                    rec.updated_at,
+                    rec.connected as i64,
+                    rec.connected_at,
+                    rec.last_synced_at,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn list_repos(&self) -> Result<Vec<RepoRecord>, StoreError> {
+        self.run(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT slug, description, url, default_branch, primary_language,
+                        is_private, is_archived, updated_at, connected, connected_at, last_synced_at
+                 FROM repo
+                 ORDER BY connected DESC, slug",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(RepoRecord {
+                        slug: row.get(0)?,
+                        description: row.get(1)?,
+                        url: row.get(2)?,
+                        default_branch: row.get(3)?,
+                        primary_language: row.get(4)?,
+                        is_private: row.get::<_, i64>(5)? != 0,
+                        is_archived: row.get::<_, i64>(6)? != 0,
+                        updated_at: row.get(7)?,
+                        connected: row.get::<_, i64>(8)? != 0,
+                        connected_at: row.get(9)?,
+                        last_synced_at: row.get(10)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn list_connected_repo_slugs(&self) -> Result<Vec<String>, StoreError> {
+        self.run(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT slug FROM repo WHERE connected = 1 ORDER BY slug",
+            )?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn set_repo_connected(
+        &self,
+        slug: &str,
+        connected: bool,
+    ) -> Result<(), StoreError> {
+        let slug = slug.to_string();
+        self.run(move |conn| {
+            // Insert a stub row if this slug isn't known yet — lets the user
+            // pre-connect a repo from WORKFLOW.md seeding before the first
+            // gh refresh has populated metadata.
+            conn.execute(
+                "INSERT INTO repo (slug, connected, connected_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(slug) DO UPDATE SET
+                    connected = excluded.connected,
+                    connected_at = CASE
+                        WHEN excluded.connected = 1 THEN excluded.connected_at
+                        ELSE NULL
+                    END",
+                rusqlite::params![
+                    slug,
+                    connected as i64,
+                    if connected { Some(Utc::now()) } else { None },
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1269,6 +1501,69 @@ mod tests {
         let fetched = s.get_issue(&pr.id).await.unwrap().unwrap();
         assert_eq!(fetched.kind, "pr_review");
         assert_eq!(fetched.author.as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn harness_upsert_preserves_concurrency() {
+        let s = fixture().await;
+        s.upsert_harness_probe("codex", "Codex", "codex", "#10b981", 2, true, Some("0.18.4"), Some(Utc::now()))
+            .await
+            .unwrap();
+        s.set_harness_concurrency("codex", 5).await.unwrap();
+        // A subsequent probe must NOT clobber the user's concurrency value.
+        s.upsert_harness_probe("codex", "Codex", "codex", "#10b981", 2, true, Some("0.19.0"), Some(Utc::now()))
+            .await
+            .unwrap();
+        let rows = s.list_harnesses().await.unwrap();
+        let codex = rows.iter().find(|h| h.id == "codex").unwrap();
+        assert_eq!(codex.concurrency, 5);
+        assert_eq!(codex.version.as_deref(), Some("0.19.0"));
+
+        // mark_missing flips to unavailable rather than deleting.
+        s.mark_missing_harnesses_unavailable(&[]).await.unwrap();
+        let rows = s.list_harnesses().await.unwrap();
+        let codex = rows.iter().find(|h| h.id == "codex").unwrap();
+        assert!(!codex.available);
+        assert_eq!(codex.concurrency, 5);
+    }
+
+    #[tokio::test]
+    async fn repo_upsert_preserves_connect_state() {
+        let s = fixture().await;
+        let r = RepoRecord {
+            slug: "owner/name".into(),
+            description: Some("first".into()),
+            url: None,
+            default_branch: Some("main".into()),
+            primary_language: Some("Rust".into()),
+            is_private: false,
+            is_archived: false,
+            updated_at: None,
+            connected: false,
+            connected_at: None,
+            last_synced_at: Some(Utc::now()),
+        };
+        s.upsert_repo_metadata(&r).await.unwrap();
+        s.set_repo_connected("owner/name", true).await.unwrap();
+        // Refreshed metadata from gh shouldn't drop the user's connect flag.
+        let r2 = RepoRecord {
+            description: Some("second".into()),
+            ..r.clone()
+        };
+        s.upsert_repo_metadata(&r2).await.unwrap();
+        let rows = s.list_repos().await.unwrap();
+        let row = rows.iter().find(|r| r.slug == "owner/name").unwrap();
+        assert!(row.connected);
+        assert_eq!(row.description.as_deref(), Some("second"));
+
+        let connected = s.list_connected_repo_slugs().await.unwrap();
+        assert_eq!(connected, vec!["owner/name".to_string()]);
+
+        s.set_repo_connected("owner/name", false).await.unwrap();
+        let rows = s.list_repos().await.unwrap();
+        let row = rows.iter().find(|r| r.slug == "owner/name").unwrap();
+        assert!(!row.connected);
+        assert!(row.connected_at.is_none());
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@ meridian-core.workspace = true
 meridian-config.workspace = true
 meridian-workspace.workspace = true
 meridian-tracker.workspace = true
+meridian-store.workspace = true
 meridian-agent.workspace = true
 serde.workspace = true
 serde_json.workspace = true

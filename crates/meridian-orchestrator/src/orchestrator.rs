@@ -9,6 +9,7 @@ use meridian_core::{
     CodexRateLimits, CodexTotals, Issue, IssueState, LiveSession, OrchestratorRuntimeState,
     RetryEntry, RunningEntry,
 };
+use meridian_store::{HarnessRecord, RepoRecord, Store};
 use meridian_tracker::Tracker;
 use meridian_workspace::WorkspaceManager;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -16,13 +17,15 @@ use tracing::{debug, info, warn};
 
 use std::collections::VecDeque;
 
-use crate::harnesses::{detect_harnesses, Harness};
+use crate::harnesses::{probe_all, Harness};
+use crate::repos::{discover, fetch_one as fetch_one_repo, DiscoveryReport};
 use crate::snapshot::{
-    KanbanBoard, KanbanColumn, RetryRow, RunningRow, SessionLog, SessionLogEntry, Snapshot,
-    TotalsRow,
+    KanbanBoard, KanbanColumn, RepoStatus, RetryRow, RunningRow, SessionLog, SessionLogEntry,
+    Snapshot, TotalsRow,
 };
 
 const HARNESS_REFRESH_SECS: u64 = 60;
+const REPO_REFRESH_SECS: u64 = 5 * 60;
 
 const SESSION_LOG_CAP: usize = 500;
 const SESSION_LOG_TTL_SECS: i64 = 30 * 60;
@@ -55,6 +58,88 @@ impl OrchestratorHandle {
         *self.inner.pause_override.lock() = paused;
         let _ = self.inner.events.send(SnapshotEvent::StateChanged);
     }
+
+    /// Trigger an immediate harness re-detect (out-of-band from the 60s
+    /// background tick). Returns the freshly-probed list. Useful when the
+    /// user just installed a new CLI and doesn't want to wait.
+    pub async fn refresh_harnesses(&self) -> Vec<Harness> {
+        self.inner.refresh_harnesses_now().await;
+        self.inner.harness_cache.lock().iter().cloned().map(Harness::from).collect()
+    }
+
+    /// Persist a new concurrency value for `harness_id` and refresh the
+    /// in-memory cache so the snapshot reflects it on the next push.
+    pub async fn set_harness_concurrency(
+        &self,
+        harness_id: &str,
+        concurrency: u32,
+    ) -> Result<(), String> {
+        self.inner
+            .store
+            .set_harness_concurrency(harness_id, concurrency as i64)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.inner.reload_harness_cache().await;
+        let _ = self.inner.events.send(SnapshotEvent::StateChanged);
+        Ok(())
+    }
+
+    /// Trigger an immediate `gh repo list` refresh. Returns the post-refresh
+    /// repo list as known to the store.
+    pub async fn refresh_repos(&self) -> Vec<RepoRecord> {
+        self.inner.refresh_repos_now().await;
+        self.inner.repo_cache.lock().clone()
+    }
+
+    /// Toggle whether the orchestrator dispatches against a repo.
+    pub async fn set_repo_connected(
+        &self,
+        slug: &str,
+        connected: bool,
+    ) -> Result<(), String> {
+        self.inner
+            .store
+            .set_repo_connected(slug, connected)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.inner.reload_repo_cache().await;
+        let _ = self.inner.events.send(SnapshotEvent::StateChanged);
+        Ok(())
+    }
+
+    /// Manual escape hatch for repos `gh repo list` discovery doesn't surface
+    /// (e.g. org admin without team grant — see [`repos`] module docs).
+    /// Validates the slug shape, marks it connected, and best-effort enriches
+    /// metadata via `gh repo view`. The connect succeeds even if metadata
+    /// fetch fails so the user can still dispatch against the repo.
+    pub async fn add_repo_by_slug(&self, slug: &str) -> Result<(), String> {
+        let trimmed = slug.trim();
+        if trimmed.is_empty() {
+            return Err("slug is empty".into());
+        }
+        let parts: Vec<&str> = trimmed.split('/').collect();
+        if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+            return Err(format!(
+                "slug must be \"owner/name\", got {trimmed:?}"
+            ));
+        }
+        // Best-effort metadata enrichment. If `gh` can't reach the repo
+        // (private, missing scope, network), we still accept the connection
+        // — the user knows the slug is valid better than we do.
+        if let Some(rec) = fetch_one_repo(trimmed).await {
+            if let Err(e) = self.inner.store.upsert_repo_metadata(&rec).await {
+                warn!(repo = %trimmed, error = %e, "manual add: metadata upsert failed");
+            }
+        }
+        self.inner
+            .store
+            .set_repo_connected(trimmed, true)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.inner.reload_repo_cache().await;
+        let _ = self.inner.events.send(SnapshotEvent::StateChanged);
+        Ok(())
+    }
 }
 
 /// Lightweight signal so WS clients know to re-fetch the snapshot.
@@ -84,14 +169,22 @@ struct OrchestratorInner {
     /// Runtime pause override; takes precedence over `agent.paused` from
     /// WORKFLOW.md until cleared (or process restart).
     pause_override: Mutex<Option<bool>>,
-    /// Last detected coding-harness availability (codex, claude, gemini, …).
-    /// Populated by a background refresh task started from `Orchestrator::run`.
-    harness_cache: Mutex<Vec<Harness>>,
+    /// Local desktop state (harnesses, repos) — single source of truth.
+    store: Arc<Store>,
+    /// Hot copy of the harness rows for `snapshot()`. Updated by the refresh
+    /// task and any concurrency-edit call.
+    harness_cache: Mutex<Vec<HarnessRecord>>,
+    /// Hot copy of the repo rows for `snapshot()`. Updated by the refresh
+    /// task and any connect-toggle call.
+    repo_cache: Mutex<Vec<RepoRecord>>,
+    /// Status of the last `gh repo list` invocation; surfaced to the UI.
+    repo_status: Mutex<RepoStatus>,
 }
 
 impl Orchestrator {
     pub fn new(
         tracker: Arc<dyn Tracker>,
+        store: Arc<Store>,
         workflow: ReloadHandle,
     ) -> Self {
         let cfg = workflow.current().config;
@@ -112,7 +205,10 @@ impl Orchestrator {
             board: Mutex::new(KanbanBoard::default()),
             session_logs: Mutex::new(HashMap::new()),
             pause_override: Mutex::new(None),
+            store,
             harness_cache: Mutex::new(Vec::new()),
+            repo_cache: Mutex::new(Vec::new()),
+            repo_status: Mutex::new(RepoStatus::default()),
         });
         Self { inner }
     }
@@ -126,7 +222,13 @@ impl Orchestrator {
     /// Run forever: startup cleanup, then the poll loop.
     pub async fn run(self) {
         let inner = self.inner.clone();
+        // Hydrate caches from sqlite + seed from WORKFLOW.md on first launch
+        // before any tick reads them.
+        inner.seed_repos_from_workflow_if_empty().await;
+        inner.reload_harness_cache().await;
+        inner.reload_repo_cache().await;
         inner.spawn_harness_refresh();
+        inner.spawn_repo_refresh();
         inner.startup_cleanup().await;
         loop {
             OrchestratorInner::tick(&inner).await;
@@ -141,19 +243,135 @@ impl OrchestratorInner {
         self.workflow.current().config
     }
 
-    /// Background task: probe `$PATH` for known coding harnesses and cache the
-    /// result. Re-runs every `HARNESS_REFRESH_SECS` so the UI picks up newly
-    /// installed/uninstalled CLIs without a restart.
+    /// Background task: probe `$PATH` for known coding harnesses, persist
+    /// the results, and refresh the in-memory cache. Re-runs every
+    /// `HARNESS_REFRESH_SECS` so the UI picks up newly installed/uninstalled
+    /// CLIs without a restart.
     fn spawn_harness_refresh(self: &Arc<Self>) {
         let inner = self.clone();
         tokio::spawn(async move {
             loop {
-                let detected = detect_harnesses().await;
-                *inner.harness_cache.lock() = detected;
-                let _ = inner.events.send(SnapshotEvent::StateChanged);
+                inner.refresh_harnesses_now().await;
                 tokio::time::sleep(Duration::from_secs(HARNESS_REFRESH_SECS)).await;
             }
         });
+    }
+
+    /// Background task: discover the user's GitHub repos via `gh repo list`,
+    /// upsert them into sqlite, refresh the cache. Repo lists change less
+    /// often than harness installs, so we tick every `REPO_REFRESH_SECS`.
+    fn spawn_repo_refresh(self: &Arc<Self>) {
+        let inner = self.clone();
+        tokio::spawn(async move {
+            loop {
+                inner.refresh_repos_now().await;
+                tokio::time::sleep(Duration::from_secs(REPO_REFRESH_SECS)).await;
+            }
+        });
+    }
+
+    async fn refresh_harnesses_now(&self) {
+        let probes = probe_all().await;
+        let mut present: Vec<String> = Vec::with_capacity(probes.len());
+        for p in &probes {
+            present.push(p.id.into());
+            if let Err(e) = self
+                .store
+                .upsert_harness_probe(
+                    p.id,
+                    p.name,
+                    p.binary,
+                    p.color,
+                    p.default_concurrency as i64,
+                    p.available,
+                    p.version.as_deref(),
+                    p.last_seen_at,
+                )
+                .await
+            {
+                warn!(harness = %p.id, error = %e, "failed to upsert harness probe");
+            }
+        }
+        // Catalog used to include rows that are no longer in CATALOG —
+        // mark them unavailable rather than delete (preserve user concurrency).
+        if let Err(e) = self.store.mark_missing_harnesses_unavailable(&present).await {
+            warn!(error = %e, "failed to mark missing harnesses unavailable");
+        }
+        self.reload_harness_cache().await;
+        let _ = self.events.send(SnapshotEvent::StateChanged);
+    }
+
+    async fn refresh_repos_now(&self) {
+        let report = discover().await;
+        let DiscoveryReport {
+            gh_available,
+            gh_authenticated,
+            error,
+            repos,
+        } = report;
+        // Only upsert if we got a valid response — preserves the cache when
+        // gh is briefly unavailable.
+        if gh_authenticated {
+            for r in &repos {
+                if let Err(e) = self.store.upsert_repo_metadata(r).await {
+                    warn!(repo = %r.slug, error = %e, "failed to upsert repo");
+                }
+            }
+        }
+        *self.repo_status.lock() = RepoStatus {
+            gh_available,
+            gh_authenticated,
+            error,
+            last_refreshed_at: Some(Utc::now()),
+        };
+        self.reload_repo_cache().await;
+        let _ = self.events.send(SnapshotEvent::StateChanged);
+    }
+
+    async fn reload_harness_cache(&self) {
+        match self.store.list_harnesses().await {
+            Ok(rows) => *self.harness_cache.lock() = rows,
+            Err(e) => warn!(error = %e, "failed to reload harness cache"),
+        }
+    }
+
+    async fn reload_repo_cache(&self) {
+        match self.store.list_repos().await {
+            Ok(rows) => *self.repo_cache.lock() = rows,
+            Err(e) => warn!(error = %e, "failed to reload repo cache"),
+        }
+    }
+
+    /// On first launch, the `repo` table is empty and the user has nothing
+    /// to dispatch against. Seed it from `tracker.repos` in WORKFLOW.md so
+    /// existing configs keep working without a manual "connect" step.
+    async fn seed_repos_from_workflow_if_empty(&self) {
+        let existing = match self.store.list_connected_repo_slugs().await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, "failed to read connected repos for seeding");
+                return;
+            }
+        };
+        if !existing.is_empty() {
+            return;
+        }
+        for slug in &self.current_config().tracker.repos {
+            if let Err(e) = self.store.set_repo_connected(slug, true).await {
+                warn!(repo = %slug, error = %e, "failed to seed repo from workflow");
+            }
+        }
+    }
+
+    /// Set of repo slugs the orchestrator should currently dispatch against.
+    /// Reads the in-memory cache so it's cheap on every tick.
+    fn connected_repo_set(&self) -> HashSet<String> {
+        self.repo_cache
+            .lock()
+            .iter()
+            .filter(|r| r.connected)
+            .map(|r| r.slug.clone())
+            .collect()
     }
 
     /// Effective paused state: runtime override wins, else `agent.paused` from
@@ -266,6 +484,18 @@ impl OrchestratorInner {
                 })
                 .then_with(|| a.identifier.cmp(&b.identifier))
         });
+
+        // Drop issues from repos the user hasn't connected. An empty
+        // connected set is treated as "everything" for the sqlite tracker
+        // case where issue.repo carries the team key, not a repo slug —
+        // if a user connects nothing we still need to dispatch.
+        let connected = self.connected_repo_set();
+        if !connected.is_empty() {
+            issues.retain(|i| match i.repo.as_deref() {
+                Some(r) => connected.contains(r),
+                None => true,
+            });
+        }
 
         let s = self.state.lock();
         let mut chosen = Vec::new();
@@ -873,9 +1103,21 @@ impl OrchestratorInner {
                 .saturating_add(live_seconds),
         };
         let kanban = self.board.lock().clone();
-        let repos = self.workflow.current().config.tracker.repos.clone();
+        let available_repos = self.repo_cache.lock().clone();
+        let repos: Vec<String> = available_repos
+            .iter()
+            .filter(|r| r.connected)
+            .map(|r| r.slug.clone())
+            .collect();
+        let repo_status = self.repo_status.lock().clone();
         let paused = self.effective_paused();
-        let harnesses = self.harness_cache.lock().clone();
+        let harnesses: Vec<Harness> = self
+            .harness_cache
+            .lock()
+            .iter()
+            .cloned()
+            .map(Harness::from)
+            .collect();
         Snapshot {
             running,
             retrying,
@@ -886,6 +1128,8 @@ impl OrchestratorInner {
             max_concurrent_agents: s.max_concurrent_agents,
             kanban,
             repos,
+            available_repos,
+            repo_status,
             paused,
             harnesses,
         }

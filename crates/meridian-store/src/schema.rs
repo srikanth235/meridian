@@ -8,12 +8,13 @@ use rusqlite::Connection;
 use crate::error::StoreError;
 
 /// Bumped whenever a migration is appended below.
-pub const CURRENT_VERSION: u32 = 2;
+pub const CURRENT_VERSION: u32 = 3;
 
 /// All migrations, in order. Append-only.
 pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, MIGRATION_001_INITIAL),
     (2, MIGRATION_002_ISSUE_KIND),
+    (3, MIGRATION_003_HARNESS_AND_REPO),
 ];
 
 pub fn apply_all(conn: &mut Connection) -> Result<(), StoreError> {
@@ -361,4 +362,37 @@ const MIGRATION_002_ISSUE_KIND: &str = r#"
 ALTER TABLE issue ADD COLUMN kind   TEXT NOT NULL DEFAULT 'issue';
 ALTER TABLE issue ADD COLUMN author TEXT;
 CREATE INDEX idx_issue_kind ON issue(kind);
+"#;
+
+/// Local desktop state: detected harnesses + GitHub repos discoverable via gh.
+/// `harness` rows persist across uninstalls (so settings like concurrency
+/// survive a reinstall) — `available` flips to 0 when the binary disappears.
+/// `repo` rows are upserted from `gh repo list`; `connected` is the user
+/// toggle and is preserved across refreshes.
+const MIGRATION_003_HARNESS_AND_REPO: &str = r#"
+CREATE TABLE harness (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    binary        TEXT NOT NULL,
+    color         TEXT NOT NULL,
+    concurrency   INTEGER NOT NULL DEFAULT 2,
+    available     INTEGER NOT NULL DEFAULT 0,
+    version       TEXT,
+    last_seen_at  TEXT
+);
+
+CREATE TABLE repo (
+    slug              TEXT PRIMARY KEY,
+    description       TEXT,
+    url               TEXT,
+    default_branch    TEXT,
+    primary_language  TEXT,
+    is_private        INTEGER NOT NULL DEFAULT 0,
+    is_archived       INTEGER NOT NULL DEFAULT 0,
+    updated_at        TEXT,
+    connected         INTEGER NOT NULL DEFAULT 0,
+    connected_at      TEXT,
+    last_synced_at    TEXT
+);
+CREATE INDEX idx_repo_connected ON repo(connected);
 "#;

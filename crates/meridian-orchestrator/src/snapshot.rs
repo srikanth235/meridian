@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use meridian_core::Issue;
+use meridian_store::RepoRecord;
 
 use crate::harnesses::Harness;
 
@@ -20,9 +21,18 @@ pub struct Snapshot {
     /// board; `running`/`retrying` overlay live state on top.
     #[serde(default)]
     pub kanban: KanbanBoard,
-    /// `tracker.repos` from config, surfaced for the UI's Projects list.
+    /// Slugs of repos the user has connected (i.e. that the orchestrator
+    /// dispatches against). Sourced from sqlite, with `tracker.repos` from
+    /// WORKFLOW.md as a one-time seed if the table is empty.
     #[serde(default)]
     pub repos: Vec<String>,
+    /// Full repo rows discovered via `gh repo list`, joined with the
+    /// `connected` flag from sqlite. Used by the Repos screen.
+    #[serde(default)]
+    pub available_repos: Vec<RepoRecord>,
+    /// Status of the last `gh repo list` invocation (gh availability, auth).
+    #[serde(default)]
+    pub repo_status: RepoStatus,
     /// True when the orchestrator is currently skipping new dispatches.
     #[serde(default)]
     pub paused: bool,
@@ -30,6 +40,16 @@ pub struct Snapshot {
     /// Refreshed on a background tick by the orchestrator.
     #[serde(default)]
     pub harnesses: Vec<Harness>,
+}
+
+/// Health of the gh-CLI integration. Lets the UI distinguish "user has zero
+/// repos" from "gh isn't installed" from "gh isn't authenticated".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RepoStatus {
+    pub gh_available: bool,
+    pub gh_authenticated: bool,
+    pub error: Option<String>,
+    pub last_refreshed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

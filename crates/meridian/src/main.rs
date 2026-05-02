@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use meridian_config::{load_workflow, WorkflowWatcher};
 use meridian_orchestrator::Orchestrator;
+use meridian_store::Store;
 use meridian_tracker::{GithubTracker, SqliteTracker, Tracker};
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -49,17 +50,20 @@ async fn main() -> Result<()> {
     // Keep watcher alive for the whole process.
     Box::leak(Box::new(watcher));
 
+    // Always open the local store — it backs harness/repo persistence
+    // regardless of where issues come from. When `tracker.kind == "sqlite"`,
+    // the same store also serves issue data.
+    let db_path = initial.config.effective_db_path();
+    info!(path = %db_path.display(), "opening local store");
+    let store = Arc::new(Store::open(&db_path).await?);
+
     let tracker: Arc<dyn Tracker> = match initial.config.tracker.kind.to_lowercase().as_str() {
         "github" => Arc::new(GithubTracker::from_config(&initial.config.tracker)?),
-        "sqlite" => {
-            let db_path = initial.config.effective_db_path();
-            info!(path = %db_path.display(), "opening sqlite store");
-            Arc::new(SqliteTracker::open(&db_path).await?)
-        }
+        "sqlite" => Arc::new(SqliteTracker::new(store.clone())),
         other => anyhow::bail!("unsupported tracker.kind: {other}"),
     };
 
-    let orch = Orchestrator::new(tracker, workflow.clone());
+    let orch = Orchestrator::new(tracker, store.clone(), workflow.clone());
     let handle = orch.handle();
 
     // Start HTTP server.

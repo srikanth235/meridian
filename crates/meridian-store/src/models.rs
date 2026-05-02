@@ -382,3 +382,40 @@ pub struct SessionEventRecord {
     pub event_type: String,
     pub payload_json: Option<String>,
 }
+
+// ============================================================================
+// Local desktop state: harnesses + repos
+// ============================================================================
+
+/// One detected coding-harness CLI (codex, claude, gemini, …). `available` is
+/// set false on rows whose binary is no longer found on PATH; we keep the row
+/// so user settings like `concurrency` survive a reinstall.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarnessRecord {
+    pub id: String,
+    pub name: String,
+    pub binary: String,
+    pub color: String,
+    pub concurrency: i64,
+    pub available: bool,
+    pub version: Option<String>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+}
+
+/// One GitHub repo discoverable via `gh repo list`. `connected` is the user
+/// toggle that gates whether the orchestrator dispatches against this repo;
+/// it's preserved across refreshes (we never clobber it from `gh` data).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoRecord {
+    pub slug: String,
+    pub description: Option<String>,
+    pub url: Option<String>,
+    pub default_branch: Option<String>,
+    pub primary_language: Option<String>,
+    pub is_private: bool,
+    pub is_archived: bool,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub connected: bool,
+    pub connected_at: Option<DateTime<Utc>>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+}
