@@ -4,6 +4,7 @@ members = [
     "crates/meridian-core",
     "crates/meridian-config",
     "crates/meridian-workspace",
+    "crates/meridian-store",
     "crates/meridian-tracker",
     "crates/meridian-agent",
     "crates/meridian-orchestrator",
@@ -43,10 +44,12 @@ futures = "0.3"
 clap = { version = "4.5", features = ["derive", "env"] }
 regex = "1.11"
 dirs = "5.0"
+rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
 
 meridian-core = { path = "crates/meridian-core" }
 meridian-config = { path = "crates/meridian-config" }
 meridian-workspace = { path = "crates/meridian-workspace" }
+meridian-store = { path = "crates/meridian-store" }
 meridian-tracker = { path = "crates/meridian-tracker" }
 meridian-agent = { path = "crates/meridian-agent" }
 meridian-orchestrator = { path = "crates/meridian-orchestrator" }

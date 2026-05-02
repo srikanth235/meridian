@@ -36,15 +36,22 @@ pub struct ServiceConfig {
 pub struct TrackerConfig {
     pub kind: String,
     /// One or more `owner/name` repos to poll. The legacy `repo:` (singular)
-    /// key is also accepted at parse time and folded into this list.
+    /// key is also accepted at parse time and folded into this list. Required
+    /// when `kind == "github"`.
     #[serde(default)]
     pub repos: Vec<String>,
+    /// Path to the SQLite database. Required when `kind == "sqlite"`. `~` is
+    /// expanded; relative paths resolve against the directory containing
+    /// `WORKFLOW.md`. Defaults to `~/.meridian/meridian.db` when unset.
+    #[serde(default)]
+    pub db_path: Option<PathBuf>,
     /// Issue states the orchestrator dispatches on. For `kind: github` these
     /// are label names like `status:todo` (case-insensitive) plus the special
-    /// token `open` for label-less open issues.
+    /// token `open` for label-less open issues. For `kind: sqlite` these are
+    /// `workflow_state.name` values (e.g. `Todo`, `In Progress`).
     pub active_states: Vec<String>,
     /// Terminal states (cancel running workers, drop from kanban active set).
-    /// For GitHub, `closed` is the natural terminal token.
+    /// For GitHub: `closed`. For SQLite: typically `Done`, `Canceled`.
     pub terminal_states: Vec<String>,
     /// Optional explicit column ordering for the UI. If empty, columns are
     /// `active_states ++ terminal_states` in declaration order.
@@ -136,12 +143,19 @@ impl ServiceConfig {
                 repos.push(single);
             }
         }
+        let tracker_kind_lc = tracker_kind.to_lowercase();
+        let (default_active, default_terminal): (fn() -> Vec<String>, fn() -> Vec<String>) =
+            if tracker_kind_lc == "sqlite" {
+                (default_active_states_linear, default_terminal_states_linear)
+            } else {
+                (default_active_states_github, default_terminal_states_github)
+            };
         let tracker = TrackerConfig {
             repos,
-            active_states: string_list(&tracker_obj, "active_states")
-                .unwrap_or_else(default_active_states),
+            db_path: string(&tracker_obj, "db_path").map(|s| expand_path(&s)),
+            active_states: string_list(&tracker_obj, "active_states").unwrap_or_else(default_active),
             terminal_states: string_list(&tracker_obj, "terminal_states")
-                .unwrap_or_else(default_terminal_states),
+                .unwrap_or_else(default_terminal),
             columns: string_list(&tracker_obj, "columns").unwrap_or_default(),
             kind: tracker_kind,
         };
@@ -251,24 +265,30 @@ impl ServiceConfig {
                 "tracker.kind is required".into(),
             ));
         }
-        if self.tracker.kind == "github" {
-            if self.tracker.repos.is_empty() {
-                return Err(ConfigError::PreflightFailed(
-                    "tracker.repos must list at least one \"owner/name\" entry".into(),
-                ));
-            }
-            for repo in &self.tracker.repos {
-                if !repo.contains('/') {
-                    return Err(ConfigError::PreflightFailed(format!(
-                        "tracker.repos entry must be \"owner/name\", got {repo:?}"
-                    )));
+        match self.tracker.kind.to_lowercase().as_str() {
+            "github" => {
+                if self.tracker.repos.is_empty() {
+                    return Err(ConfigError::PreflightFailed(
+                        "tracker.repos must list at least one \"owner/name\" entry".into(),
+                    ));
+                }
+                for repo in &self.tracker.repos {
+                    if !repo.contains('/') {
+                        return Err(ConfigError::PreflightFailed(format!(
+                            "tracker.repos entry must be \"owner/name\", got {repo:?}"
+                        )));
+                    }
                 }
             }
-        } else {
-            return Err(ConfigError::PreflightFailed(format!(
-                "unsupported tracker.kind: {} (only \"github\" is supported)",
-                self.tracker.kind
-            )));
+            "sqlite" => {
+                // db_path is optional; an absent value is filled in by
+                // `effective_db_path()` at construction time.
+            }
+            other => {
+                return Err(ConfigError::PreflightFailed(format!(
+                    "unsupported tracker.kind: {other} (supported: \"github\", \"sqlite\")"
+                )));
+            }
         }
         if self.codex.command.trim().is_empty() {
             return Err(ConfigError::PreflightFailed(
@@ -276,6 +296,19 @@ impl ServiceConfig {
             ));
         }
         Ok(())
+    }
+
+    /// Resolve the effective SQLite path for `kind: sqlite`. Falls back to
+    /// `~/.meridian/meridian.db` when `tracker.db_path` is unset.
+    pub fn effective_db_path(&self) -> PathBuf {
+        if let Some(p) = &self.tracker.db_path {
+            return p.clone();
+        }
+        if let Some(home) = dirs::home_dir() {
+            home.join(".meridian").join("meridian.db")
+        } else {
+            PathBuf::from("meridian.db")
+        }
     }
 
     /// Effective kanban column ordering: explicit `tracker.columns`, else
@@ -380,12 +413,25 @@ fn default_workspace_root() -> PathBuf {
     std::env::temp_dir().join("meridian_workspaces")
 }
 
-fn default_active_states() -> Vec<String> {
+fn default_active_states_github() -> Vec<String> {
     vec!["status:todo".into(), "status:in-progress".into()]
 }
 
-fn default_terminal_states() -> Vec<String> {
+fn default_terminal_states_github() -> Vec<String> {
     vec!["closed".into()]
+}
+
+fn default_active_states_linear() -> Vec<String> {
+    vec!["Todo".into(), "In Progress".into()]
+}
+
+fn default_terminal_states_linear() -> Vec<String> {
+    vec!["Done".into(), "Canceled".into()]
+}
+
+#[cfg(test)]
+fn default_active_states() -> Vec<String> {
+    default_active_states_github()
 }
 
 fn default_turn_sandbox_policy() -> Value {
@@ -450,8 +496,27 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_kind() {
-        let cfg = ServiceConfig::from_raw(&json!({"tracker": {"kind": "linear"}}));
+        let cfg = ServiceConfig::from_raw(&json!({"tracker": {"kind": "jira"}}));
         assert!(cfg.preflight().is_err());
+    }
+
+    #[test]
+    fn preflight_passes_for_sqlite_without_db_path() {
+        let cfg = ServiceConfig::from_raw(&json!({"tracker": {"kind": "sqlite"}}));
+        assert!(cfg.preflight().is_ok(), "sqlite kind should preflight without db_path");
+        assert!(cfg.effective_db_path().to_string_lossy().ends_with("meridian.db"));
+        // Linear-style defaults applied:
+        assert_eq!(cfg.tracker.active_states, vec!["Todo".to_string(), "In Progress".to_string()]);
+        assert_eq!(cfg.tracker.terminal_states, vec!["Done".to_string(), "Canceled".to_string()]);
+    }
+
+    #[test]
+    fn preflight_passes_for_sqlite_with_db_path() {
+        let cfg = ServiceConfig::from_raw(&json!({
+            "tracker": {"kind": "sqlite", "db_path": "/tmp/meridian-test.db"}
+        }));
+        assert!(cfg.preflight().is_ok());
+        assert_eq!(cfg.effective_db_path(), std::path::PathBuf::from("/tmp/meridian-test.db"));
     }
 
     #[test]
