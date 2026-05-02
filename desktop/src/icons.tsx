@@ -17,8 +17,9 @@ const base = (size = 14): SVGProps<SVGSVGElement> => ({
 export function IconLogo({ size = 20, ...rest }: IconProps) {
   return (
     <svg {...base(size)} {...rest}>
-      <path d="M4 18 Q 8 4 12 12 T 20 6" />
-      <circle cx="20" cy="6" r="1.6" fill="currentColor" />
+      <circle cx="12" cy="12" r="9" />
+      <ellipse cx="12" cy="12" rx="3.5" ry="9" />
+      <line x1="12" y1="3" x2="12" y2="21" />
     </svg>
   );
 }

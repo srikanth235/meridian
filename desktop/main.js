@@ -9,7 +9,7 @@
 // Remote debugging port (default 9333) is enabled so Chrome DevTools and
 // Claude's CDP-based inspection can attach to the renderer.
 
-const { app, BrowserWindow, Menu, shell, dialog } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog, nativeImage } = require('electron');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 const path = require('node:path');
@@ -296,4 +296,12 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) startup();
 });
 
-app.whenReady().then(startup);
+app.whenReady().then(() => {
+  if (process.platform === 'darwin' && app.dock) {
+    const iconPath = path.join(__dirname, 'build', 'icon.png');
+    if (fs.existsSync(iconPath)) {
+      app.dock.setIcon(nativeImage.createFromPath(iconPath));
+    }
+  }
+  return startup();
+});
