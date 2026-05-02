@@ -1,4 +1,4 @@
-// Fixture data used to fill Symphony screens that aren't backed by the live
+// Fixture data used to fill Meridian screens that aren't backed by the live
 // snapshot yet (workers, workflow definitions, sparkline series). These are
 // presentation-only — replace with real backend feeds when available.
 

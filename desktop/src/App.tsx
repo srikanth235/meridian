@@ -8,11 +8,13 @@ import {
   IconBranch,
   IconDashboard,
   IconLogo,
+  IconMoon,
   IconPause,
   IconPlay,
   IconRetry,
   IconSearch,
   IconSettings,
+  IconSun,
   IconWorkers,
   IconWorkflow,
 } from "./icons";
@@ -31,12 +33,32 @@ type Route =
 
 type ConnState = "connecting" | "open" | "closed";
 type Density = "comfortable" | "dense";
+type Theme = "dark" | "light";
+
+const THEME_KEY = "meridian.theme";
+
+function applyTheme(theme: Theme) {
+  const root = document.documentElement;
+  if (theme === "light") root.classList.add("theme-light");
+  else root.classList.remove("theme-light");
+}
 
 export function App() {
   const { snapshot, conn } = useSnapshot();
   const [route, setRoute] = useState<Route>({ name: "dashboard" });
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [density] = useState<Density>("comfortable");
+  const [theme, setTheme] = useState<Theme>(() => {
+    const stored = typeof localStorage !== "undefined" ? localStorage.getItem(THEME_KEY) : null;
+    return stored === "light" ? "light" : "dark";
+  });
+
+  useEffect(() => {
+    applyTheme(theme);
+    try { localStorage.setItem(THEME_KEY, theme); } catch {}
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
 
   // Re-render every second so relative timestamps and elapsed counters tick.
   const [, force] = useState(0);
@@ -74,7 +96,7 @@ export function App() {
 
   return (
     <div className="w-screen h-screen flex flex-col bg-bg text-text overflow-hidden" style={{ fontSize: 13 }}>
-      <Titlebar conn={conn} snapshot={snapshot} />
+      <Titlebar conn={conn} snapshot={snapshot} theme={theme} onToggleTheme={toggleTheme} />
       <div className="flex-1 flex min-h-0">
         <Sidebar
           snapshot={snapshot}
@@ -125,7 +147,17 @@ export function App() {
 
 /* ─────────────────────────  Titlebar  ───────────────────────── */
 
-function Titlebar({ conn, snapshot }: { conn: ConnState; snapshot: Snapshot | null }) {
+function Titlebar({
+  conn,
+  snapshot,
+  theme,
+  onToggleTheme,
+}: {
+  conn: ConnState;
+  snapshot: Snapshot | null;
+  theme: Theme;
+  onToggleTheme: () => void;
+}) {
   // The Electron shell uses macOS hidden-inset chrome — traffic lights live on
   // the left (~80px reserved), so we pad-left and use this strip as a drag region.
   const repos = snapshot?.repos ?? [];
@@ -139,8 +171,9 @@ function Titlebar({ conn, snapshot }: { conn: ConnState; snapshot: Snapshot | nu
     >
       <div className="pl-24 pr-3.5 h-full flex items-center gap-3">
         <div className="flex-1 text-center text-[12px] font-medium text-textDim" style={{ letterSpacing: 0.2 }}>
-          Symphony — {subtitle}
+          Meridian — {subtitle}
         </div>
+        <ThemeToggle theme={theme} onToggle={onToggleTheme} />
         <PauseToggle snapshot={snapshot} />
         <ConnPill state={conn} />
       </div>
@@ -150,6 +183,21 @@ function Titlebar({ conn, snapshot }: { conn: ConnState; snapshot: Snapshot | nu
         </div>
       )}
     </header>
+  );
+}
+
+function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+  const isDark = theme === "dark";
+  return (
+    <button
+      onClick={onToggle}
+      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      aria-label="Toggle theme"
+      className="inline-flex items-center justify-center h-6 w-6 rounded-md text-textDim hover:text-text border border-border cursor-pointer"
+      style={{ background: "transparent" }}
+    >
+      {isDark ? <IconSun size={12} /> : <IconMoon size={12} />}
+    </button>
   );
 }
 
@@ -272,7 +320,7 @@ function Sidebar({
         </div>
         <div>
           <div className="text-[13.5px] font-semibold text-text" style={{ letterSpacing: -0.1 }}>
-            Symphony
+            Meridian
           </div>
           <div className="text-[10px] text-textMute font-mono mt-0.5">
             v0.4.2 · main
@@ -308,7 +356,7 @@ function Sidebar({
               style={{
                 height: 30,
                 padding: "0 10px",
-                background: active ? "#1c1c1c" : "transparent",
+                background: active ? "var(--panel3)" : "transparent",
                 border: 0,
                 fontSize: 12.5,
               }}
@@ -325,8 +373,8 @@ function Sidebar({
                 <span
                   className="font-mono text-[10.5px] tabular-nums px-1.5 rounded-sm"
                   style={{
-                    background: active ? "#111111" : "#1c1c1c",
-                    color: active ? "#ededed" : "#6a6a6a",
+                    background: active ? "var(--panel)" : "var(--panel3)",
+                    color: active ? "var(--text)" : "var(--textMute)",
                   }}
                 >
                   {item.badge}
@@ -352,7 +400,7 @@ function Sidebar({
                   height: 26,
                   padding: "0 10px",
                   background:
-                    route.name === "issue" && route.id === i.id ? "#1c1c1c" : "transparent",
+                    route.name === "issue" && route.id === i.id ? "var(--panel3)" : "transparent",
                   border: 0,
                   fontSize: 11.5,
                 }}
@@ -377,7 +425,7 @@ function Sidebar({
       {/* Footer — user */}
       <div
         className="flex items-center gap-2 mt-2 pt-2.5"
-        style={{ padding: "10px 8px", borderTop: "1px solid #222222" }}
+        style={{ padding: "10px 8px", borderTop: "1px solid var(--border)" }}
       >
         <div
           className="rounded-full text-white text-[11px] font-semibold flex items-center justify-center"
@@ -387,11 +435,11 @@ function Sidebar({
             background: "linear-gradient(135deg, #10b981, #3b82f6)",
           }}
         >
-          MR
+          S
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-[12px] font-medium text-text">Maya Rodriguez</div>
-          <div className="text-[10.5px] text-textMute font-mono">@m.rodriguez</div>
+          <div className="text-[12px] font-medium text-text">Srikanth</div>
+          <div className="text-[10.5px] text-textMute font-mono">@srikanth</div>
         </div>
         <button className="bg-transparent border-0 text-textMute hover:text-textDim cursor-pointer p-1">
           <IconSettings size={14} />
@@ -499,12 +547,12 @@ function CommandPalette({
     <div
       onClick={onClose}
       className="fixed inset-0 z-50 flex items-start justify-center"
-      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(2px)", paddingTop: "14vh" }}
+      style={{ background: "var(--overlay)", backdropFilter: "blur(2px)", paddingTop: "14vh" }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         className="bg-panel border border-borderL rounded-lg overflow-hidden"
-        style={{ width: 580, maxWidth: "92vw", boxShadow: "0 24px 64px rgba(0,0,0,0.5)" }}
+        style={{ width: 580, maxWidth: "92vw", boxShadow: "var(--shadow)" }}
       >
         <div className="flex items-center gap-2.5 px-4 py-3.5 border-b border-borderS">
           <span className="text-textMute">
@@ -537,8 +585,8 @@ function CommandPalette({
                   className="w-full flex items-center gap-3 rounded-md text-left cursor-pointer"
                   style={{
                     padding: "8px 10px",
-                    background: i === sel ? "#1c1c1c" : "transparent",
-                    color: "#ededed",
+                    background: i === sel ? "var(--panel3)" : "transparent",
+                    color: "var(--text)",
                     border: 0,
                     fontSize: 13,
                   }}
