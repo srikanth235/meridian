@@ -1,63 +1,151 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSnapshot } from "./useSnapshot";
-import { useSessionLog } from "./useSessionLog";
-import { formatNumber, relTime } from "./format";
-import type { Issue, RetryRow, RunningRow, SessionLogEntry, Snapshot } from "./types";
+import type { Issue, Snapshot } from "./types";
+import { Kbd, fmtElapsed } from "./atoms";
+import {
+  IconActivity,
+  IconAgents,
+  IconBranch,
+  IconDashboard,
+  IconLogo,
+  IconPause,
+  IconPlay,
+  IconRetry,
+  IconSearch,
+  IconSettings,
+  IconWorkers,
+  IconWorkflow,
+} from "./icons";
+import { Dashboard } from "./screens/Dashboard";
+import { AgentsList } from "./screens/Agents";
+import { Workers, Workflows, Activity } from "./screens/Other";
+import { IssueDetail } from "./screens/IssueDetail";
 
-const RUNNING_GROUP = "__running__";
+type Route =
+  | { name: "dashboard" }
+  | { name: "agents" }
+  | { name: "workflows" }
+  | { name: "workers" }
+  | { name: "activity" }
+  | { name: "issue"; id: string };
 
-type View =
-  | { kind: "home" }
-  | { kind: "project"; repo: string }
-  | { kind: "issue"; id: string };
+type ConnState = "connecting" | "open" | "closed";
+type Density = "comfortable" | "dense";
 
 export function App() {
   const { snapshot, conn } = useSnapshot();
-  const [view, setView] = useState<View>({ kind: "home" });
-  // Re-render every second so relative timestamps tick.
+  const [route, setRoute] = useState<Route>({ name: "dashboard" });
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [density] = useState<Density>("comfortable");
+
+  // Re-render every second so relative timestamps and elapsed counters tick.
   const [, force] = useState(0);
   useEffect(() => {
     const id = setInterval(() => force((n) => n + 1), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Resolve the selected issue from the live snapshot every render so it
-  // stays fresh as state ticks.
+  // ⌘K to open palette
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setPaletteOpen((p) => !p);
+      } else if (e.key === "Escape") {
+        setPaletteOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const selectedIssue = useMemo<Issue | null>(() => {
-    if (view.kind !== "issue" || !snapshot) return null;
+    if (route.name !== "issue" || !snapshot) return null;
     for (const col of snapshot.kanban?.columns ?? []) {
-      const f = col.issues.find((i) => i.id === view.id);
+      const f = col.issues.find((i) => i.id === route.id);
       if (f) return f;
     }
-    for (const i of snapshot.kanban?.unsorted ?? []) if (i.id === view.id) return i;
+    for (const i of snapshot.kanban?.unsorted ?? []) if (i.id === route.id) return i;
+    for (const r of snapshot.running) if (r.issue.id === route.id) return r.issue;
     return null;
-  }, [view, snapshot]);
+  }, [route, snapshot]);
+
+  const openIssue = (id: string) => setRoute({ name: "issue", id });
 
   return (
-    <div className="h-full flex flex-col bg-bg">
-      <TopBar conn={conn} snapshot={snapshot} />
+    <div className="w-screen h-screen flex flex-col bg-bg text-text overflow-hidden" style={{ fontSize: 13 }}>
+      <Titlebar conn={conn} snapshot={snapshot} />
       <div className="flex-1 flex min-h-0">
-        <Sidebar snapshot={snapshot} view={view} onView={setView} />
-        <Main snapshot={snapshot} view={view} issue={selectedIssue} onView={setView} />
+        <Sidebar
+          snapshot={snapshot}
+          route={route}
+          setRoute={setRoute}
+          onPalette={() => setPaletteOpen(true)}
+        />
+        <main className="flex-1 overflow-auto min-w-0 bg-bg">
+          {!snapshot ? (
+            <div className="h-full flex items-center justify-center text-textMute text-[13px]">
+              connecting…
+            </div>
+          ) : route.name === "dashboard" ? (
+            <Dashboard snapshot={snapshot} density={density} onOpenIssue={openIssue} />
+          ) : route.name === "agents" ? (
+            <AgentsList snapshot={snapshot} density={density} onOpenIssue={openIssue} />
+          ) : route.name === "workflows" ? (
+            <Workflows snapshot={snapshot} density={density} />
+          ) : route.name === "workers" ? (
+            <Workers snapshot={snapshot} density={density} />
+          ) : route.name === "activity" ? (
+            <Activity snapshot={snapshot} density={density} />
+          ) : route.name === "issue" && selectedIssue ? (
+            <IssueDetail
+              snapshot={snapshot}
+              issue={selectedIssue}
+              onBack={() => setRoute({ name: "agents" })}
+            />
+          ) : (
+            <div className="h-full flex items-center justify-center text-textMute text-[13px]">
+              issue not found in current snapshot
+            </div>
+          )}
+        </main>
       </div>
+
+      {paletteOpen && snapshot && (
+        <CommandPalette
+          snapshot={snapshot}
+          onClose={() => setPaletteOpen(false)}
+          setRoute={setRoute}
+          openIssue={openIssue}
+        />
+      )}
     </div>
   );
 }
 
-/* ---------- top bar ---------- */
+/* ─────────────────────────  Titlebar  ───────────────────────── */
 
-function TopBar({ conn, snapshot }: { conn: string; snapshot: Snapshot | null }) {
-  // Left side intentionally empty: macOS hidden-inset titlebar shows the
-  // traffic-light buttons there. Pad to keep controls clear of them.
+function Titlebar({ conn, snapshot }: { conn: ConnState; snapshot: Snapshot | null }) {
+  // The Electron shell uses macOS hidden-inset chrome — traffic lights live on
+  // the left (~80px reserved), so we pad-left and use this strip as a drag region.
+  const repos = snapshot?.repos ?? [];
+  const subtitle =
+    repos.length === 0 ? "—" : repos.length === 1 ? repos[0] : `${repos.length} repos`;
+
   return (
-    <header className="shrink-0 border-b border-border bg-panel app-drag">
-      <div className="pl-24 pr-4 h-11 flex items-center gap-3">
-        <div className="flex-1" />
+    <header
+      className="shrink-0 app-drag bg-chrome border-b border-border"
+      style={{ height: 38 }}
+    >
+      <div className="pl-24 pr-3.5 h-full flex items-center gap-3">
+        <div className="flex-1 text-center text-[12px] font-medium text-textDim" style={{ letterSpacing: 0.2 }}>
+          Symphony — {subtitle}
+        </div>
         <PauseToggle snapshot={snapshot} />
         <ConnPill state={conn} />
       </div>
       {snapshot?.paused && (
-        <div className="bg-warn/10 border-t border-warn/20 text-warn/90 text-[11px] px-4 py-1 text-center">
+        <div className="border-t border-amber/30 text-amber text-[11px] px-4 py-1 text-center" style={{ background: "rgba(245,158,11,0.1)" }}>
           paused — no new agents will dispatch. in-flight workers continue.
         </div>
       )}
@@ -67,8 +155,8 @@ function TopBar({ conn, snapshot }: { conn: string; snapshot: Snapshot | null })
 
 function PauseToggle({ snapshot }: { snapshot: Snapshot | null }) {
   const [busy, setBusy] = useState(false);
-  const paused = snapshot?.paused ?? true;
   if (!snapshot) return null;
+  const paused = snapshot.paused;
   return (
     <button
       disabled={busy}
@@ -80,702 +168,406 @@ function PauseToggle({ snapshot }: { snapshot: Snapshot | null }) {
           setBusy(false);
         }
       }}
-      className={`pill text-[10px] ${paused ? "pill-warn" : "pill-ok"} hover:opacity-80`}
+      className={`inline-flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-medium border cursor-pointer ${
+        paused
+          ? "text-amber border-amber/30"
+          : "text-accent border-accent/30"
+      }`}
+      style={{ background: paused ? "rgba(245,158,11,0.08)" : "rgba(16,185,129,0.08)" }}
     >
-      {busy ? "…" : paused ? "▶ resume" : "⏸ pause"}
+      {busy ? "…" : paused ? <><IconPlay size={10} /> resume</> : <><IconPause size={10} /> pause</>}
     </button>
   );
 }
 
-function ConnPill({ state }: { state: string }) {
+function ConnPill({ state }: { state: ConnState }) {
   const cls =
-    state === "open" ? "pill-ok" : state === "connecting" ? "pill-warn" : "pill-err";
-  return <span className={`pill ${cls} text-[10px]`}>{state}</span>;
+    state === "open" ? "text-accent" : state === "connecting" ? "text-amber" : "text-red";
+  return (
+    <span className={`inline-flex items-center gap-1.5 font-mono text-[11px] ${cls}`}>
+      <span
+        className="w-1.5 h-1.5 rounded-full"
+        style={{
+          background: state === "open" ? "#10b981" : state === "connecting" ? "#f59e0b" : "#ef4444",
+        }}
+      />
+      {state}
+    </span>
+  );
 }
 
-/* ---------- sidebar ---------- */
+/* ─────────────────────────  Sidebar  ───────────────────────── */
 
 function Sidebar({
   snapshot,
-  view,
-  onView,
+  route,
+  setRoute,
+  onPalette,
 }: {
   snapshot: Snapshot | null;
-  view: View;
-  onView: (v: View) => void;
+  route: Route;
+  setRoute: (r: Route) => void;
+  onPalette: () => void;
 }) {
-  const selectedId = view.kind === "issue" ? view.id : null;
-  const activeRepo = repoForView(view, snapshot);
-  const onSelect = (id: string) => onView({ kind: "issue", id });
+  const items: Array<{
+    id: Route["name"];
+    label: string;
+    icon: React.ComponentType<{ size?: number }>;
+    badge?: number;
+  }> = [
+    { id: "dashboard", label: "Dashboard", icon: IconDashboard },
+    {
+      id: "agents",
+      label: "Agents",
+      icon: IconAgents,
+      badge: snapshot?.running.length ?? 0,
+    },
+    {
+      id: "workflows",
+      label: "Workflows",
+      icon: IconWorkflow,
+    },
+    { id: "workers", label: "Workers", icon: IconWorkers },
+    { id: "activity", label: "Activity", icon: IconActivity },
+  ];
 
-  const runningById = useMemo(() => {
-    const m = new Map<string, RunningRow>();
-    for (const r of snapshot?.running ?? []) m.set(r.issue.id, r);
-    return m;
-  }, [snapshot]);
-  const retryById = useMemo(() => {
-    const m = new Map<string, RetryRow>();
-    for (const r of snapshot?.retrying ?? []) m.set(r.issue_id, r);
-    return m;
-  }, [snapshot]);
+  const matches = (id: Route["name"]) =>
+    route.name === id || (id === "agents" && route.name === "issue");
 
-  const repos = snapshot?.repos ?? [];
-  const projectCounts = useMemo(() => {
-    const m = new Map<string, { total: number; running: number }>();
-    if (!snapshot) return m;
-    for (const r of repos) m.set(r, { total: 0, running: 0 });
-    const tally = (issue: Issue, isRunning: boolean) => {
-      const r = issue.repo;
-      if (!r) return;
-      const cur = m.get(r) ?? { total: 0, running: 0 };
-      cur.total += 1;
-      if (isRunning) cur.running += 1;
-      m.set(r, cur);
-    };
-    const runningIds = new Set(snapshot.running.map((r) => r.issue.id));
-    for (const col of snapshot.kanban?.columns ?? []) {
-      for (const i of col.issues) tally(i, runningIds.has(i.id));
-    }
-    for (const i of snapshot.kanban?.unsorted ?? []) tally(i, runningIds.has(i.id));
-    return m;
-  }, [snapshot, repos]);
-
-  // Issues for the active project (or all when on Home), grouped by state.
-  const groups = useMemo(() => {
-    const out: Array<{ key: string; label: string; issues: Issue[] }> = [];
-    if (!snapshot?.kanban?.loaded) return out;
-
-    const passesRepo = (i: Issue) => !activeRepo || i.repo === activeRepo;
-
-    const runningIssues = (snapshot.running ?? [])
-      .map((r) => r.issue)
-      .filter(passesRepo);
-    if (runningIssues.length > 0) {
-      out.push({ key: RUNNING_GROUP, label: "Running", issues: runningIssues });
-    }
-    const runningIds = new Set(runningIssues.map((i) => i.id));
-    for (const col of snapshot.kanban.columns ?? []) {
-      const issues = col.issues.filter(
-        (i) => passesRepo(i) && !runningIds.has(i.id)
-      );
-      if (issues.length > 0) {
-        out.push({ key: col.state, label: prettyState(col.state), issues });
+  const pinned: Issue[] = useMemo(() => {
+    if (!snapshot) return [];
+    const out: Issue[] = [];
+    const seen = new Set<string>();
+    for (const r of snapshot.running) {
+      if (!seen.has(r.issue.id)) {
+        seen.add(r.issue.id);
+        out.push(r.issue);
+        if (out.length >= 3) break;
       }
     }
-    if ((snapshot.kanban.unsorted ?? []).length > 0) {
-      const issues = snapshot.kanban.unsorted.filter(
-        (i) => passesRepo(i) && !runningIds.has(i.id)
-      );
-      if (issues.length > 0)
-        out.push({ key: "__unsorted__", label: "Unsorted", issues });
+    if (out.length < 3) {
+      for (const col of snapshot.kanban?.columns ?? []) {
+        for (const i of col.issues) {
+          if (out.length >= 3) break;
+          if (!seen.has(i.id)) {
+            seen.add(i.id);
+            out.push(i);
+          }
+        }
+        if (out.length >= 3) break;
+      }
     }
     return out;
-  }, [snapshot, activeRepo]);
+  }, [snapshot]);
 
   return (
-    <aside className="shrink-0 w-72 border-r border-border bg-panel/40 overflow-y-auto">
-      <nav className="py-2">
-        <button
-          onClick={() => onView({ kind: "home" })}
-          className={`w-full text-left px-4 py-1.5 flex items-center gap-2 hover:bg-slate-800/40 ${
-            view.kind === "home"
-              ? "bg-slate-700/40 border-l-2 border-accent -ml-px"
-              : ""
-          }`}
-        >
-          <span className="text-slate-400 text-sm leading-none">⌂</span>
-          <span className="text-[12px] text-slate-200">Home</span>
-          <span className="text-[10px] text-slate-600 ml-auto">all projects</span>
-        </button>
-
-        <div className="mt-3 px-4 mb-1 text-[10px] uppercase tracking-wider text-slate-600">
-          Projects
+    <aside
+      className="shrink-0 bg-chrome border-r border-border flex flex-col"
+      style={{ width: 232, padding: "12px 10px" }}
+    >
+      {/* Brand */}
+      <div className="flex items-center gap-2 px-2 pb-3.5 pt-1.5">
+        <div className="text-accent">
+          <IconLogo size={20} />
         </div>
-        {repos.length === 0 ? (
-          <div className="text-xs text-slate-600 px-4 py-1.5 italic">
-            no repos configured
+        <div>
+          <div className="text-[13.5px] font-semibold text-text" style={{ letterSpacing: -0.1 }}>
+            Symphony
           </div>
-        ) : (
-          <ul>
-            {repos.map((r) => {
-              const counts = projectCounts.get(r) ?? { total: 0, running: 0 };
-              const selected = activeRepo === r;
-              return (
-                <li key={r}>
-                  <button
-                    onClick={() =>
-                      onView({ kind: "project", repo: r })
-                    }
-                    className={`w-full text-left px-4 py-1.5 flex items-center gap-2 hover:bg-slate-800/40 ${
-                      selected
-                        ? "bg-slate-700/40 border-l-2 border-accent -ml-px"
-                        : ""
-                    }`}
-                  >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                        counts.running > 0 ? "bg-ok animate-pulse" : "bg-slate-600"
-                      }`}
-                    />
-                    <span className="text-[12px] text-slate-200 truncate flex-1">
-                      {r}
-                    </span>
-                    <span className="text-[10px] text-slate-600 tabular-nums">
-                      {counts.running > 0 ? `${counts.running}/` : ""}
-                      {counts.total}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+          <div className="text-[10px] text-textMute font-mono mt-0.5">
+            v0.4.2 · main
+          </div>
+        </div>
+      </div>
 
-        <div className="my-2 border-t border-border/40" />
+      {/* Search */}
+      <button
+        onClick={onPalette}
+        className="flex items-center gap-2 mb-3 bg-panel2 border border-border rounded-md text-textMute text-[12px] cursor-pointer text-left hover:bg-panel3"
+        style={{ height: 30, padding: "0 10px" }}
+      >
+        <IconSearch size={13} />
+        <span className="flex-1">Search or jump to…</span>
+        <Kbd>⌘</Kbd>
+        <Kbd>K</Kbd>
+      </button>
 
-        {!snapshot?.kanban?.loaded ? (
-          <div className="text-xs text-slate-500 px-4 py-2">loading…</div>
-        ) : groups.length === 0 ? (
-          <div className="text-xs text-slate-600 px-4 py-2 italic">no issues</div>
-        ) : (
-          groups.map((g) => (
-            <SidebarGroup
-              key={g.key}
-              label={g.label}
-              issues={g.issues}
-              isRunning={g.key === RUNNING_GROUP}
-              runningById={runningById}
-              retryById={retryById}
-              selectedId={selectedId}
-              onSelect={onSelect}
-              showRepo={!activeRepo}
-            />
-          ))
+      {/* Nav */}
+      <div className="flex flex-col gap-px flex-1 overflow-y-auto">
+        <SectionLabel>Workspace</SectionLabel>
+        {items.map((item) => {
+          const Icon = item.icon;
+          const active = matches(item.id);
+          return (
+            <button
+              key={item.id}
+              onClick={() => setRoute({ name: item.id } as Route)}
+              className={`sym-nav flex items-center gap-2.5 rounded-md text-left cursor-pointer relative ${
+                active ? "text-text font-medium" : "text-textDim"
+              }`}
+              style={{
+                height: 30,
+                padding: "0 10px",
+                background: active ? "#1c1c1c" : "transparent",
+                border: 0,
+                fontSize: 12.5,
+              }}
+            >
+              {active && (
+                <span
+                  className="absolute bg-accent rounded-sm"
+                  style={{ left: 0, top: 7, bottom: 7, width: 2 }}
+                />
+              )}
+              <Icon size={14} />
+              <span className="flex-1">{item.label}</span>
+              {item.badge != null && item.badge > 0 && (
+                <span
+                  className="font-mono text-[10.5px] tabular-nums px-1.5 rounded-sm"
+                  style={{
+                    background: active ? "#111111" : "#1c1c1c",
+                    color: active ? "#ededed" : "#6a6a6a",
+                  }}
+                >
+                  {item.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+
+        {pinned.length > 0 && (
+          <>
+            <SectionLabel className="mt-3.5">Pinned issues</SectionLabel>
+            {pinned.map((i) => (
+              <button
+                key={i.id}
+                onClick={() => setRoute({ name: "issue", id: i.id })}
+                className={`sym-nav flex items-center gap-2 rounded-md text-left cursor-pointer ${
+                  route.name === "issue" && route.id === i.id
+                    ? "text-text"
+                    : "text-textDim"
+                }`}
+                style={{
+                  height: 26,
+                  padding: "0 10px",
+                  background:
+                    route.name === "issue" && route.id === i.id ? "#1c1c1c" : "transparent",
+                  border: 0,
+                  fontSize: 11.5,
+                }}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    snapshot?.running.some((r) => r.issue.id === i.id)
+                      ? "bg-accent"
+                      : "bg-textMute"
+                  }`}
+                />
+                <span className="font-mono text-[10.5px] text-textMute shrink-0">
+                  {i.identifier}
+                </span>
+                <span className="flex-1 truncate">{i.title}</span>
+              </button>
+            ))}
+          </>
         )}
-      </nav>
+      </div>
+
+      {/* Footer — user */}
+      <div
+        className="flex items-center gap-2 mt-2 pt-2.5"
+        style={{ padding: "10px 8px", borderTop: "1px solid #222222" }}
+      >
+        <div
+          className="rounded-full text-white text-[11px] font-semibold flex items-center justify-center"
+          style={{
+            width: 26,
+            height: 26,
+            background: "linear-gradient(135deg, #10b981, #3b82f6)",
+          }}
+        >
+          MR
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[12px] font-medium text-text">Maya Rodriguez</div>
+          <div className="text-[10.5px] text-textMute font-mono">@m.rodriguez</div>
+        </div>
+        <button className="bg-transparent border-0 text-textMute hover:text-textDim cursor-pointer p-1">
+          <IconSettings size={14} />
+        </button>
+      </div>
     </aside>
   );
 }
 
-function repoForView(view: View, snapshot: Snapshot | null): string | null {
-  if (view.kind === "project") return view.repo;
-  if (view.kind === "issue" && snapshot) {
-    for (const col of snapshot.kanban?.columns ?? []) {
-      const f = col.issues.find((i) => i.id === view.id);
-      if (f?.repo) return f.repo;
-    }
-  }
-  return null;
-}
-
-function SidebarGroup({
-  label,
-  issues,
-  isRunning,
-  runningById,
-  retryById,
-  selectedId,
-  onSelect,
-  showRepo,
-}: {
-  label: string;
-  issues: Issue[];
-  isRunning: boolean;
-  runningById: Map<string, RunningRow>;
-  retryById: Map<string, RetryRow>;
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  showRepo: boolean;
-}) {
-  const [open, setOpen] = useState(true);
+function SectionLabel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className="mb-1">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full px-4 py-1 flex items-center gap-2 text-[10px] uppercase tracking-wider text-slate-500 hover:text-slate-300"
-      >
-        <span className="opacity-60">{open ? "▾" : "▸"}</span>
-        <span>{label}</span>
-        <span className="text-slate-600 tabular-nums">{issues.length}</span>
-      </button>
-      {open && (
-        <ul className="mb-1">
-          {issues.map((issue) => (
-            <SidebarItem
-              key={issue.id}
-              issue={issue}
-              live={isRunning ? runningById.get(issue.id) : undefined}
-              retry={retryById.get(issue.id)}
-              selected={selectedId === issue.id}
-              onSelect={() => onSelect(issue.id)}
-              showRepo={showRepo}
-            />
-          ))}
-        </ul>
-      )}
+    <div
+      className={`text-[10px] text-textMute font-semibold uppercase ${className}`}
+      style={{ letterSpacing: 0.6, padding: "8px 10px 4px" }}
+    >
+      {children}
     </div>
   );
 }
 
-function SidebarItem({
-  issue,
-  live,
-  retry,
-  selected,
-  onSelect,
-  showRepo,
-}: {
-  issue: Issue;
-  live?: RunningRow;
-  retry?: RetryRow;
-  selected: boolean;
-  onSelect: () => void;
-  showRepo: boolean;
-}) {
-  const dotCls = live
-    ? "bg-ok animate-pulse"
-    : retry
-    ? "bg-warn"
-    : issue.state === "closed"
-    ? "bg-slate-600"
-    : "bg-slate-500";
-  const repoShort = issue.repo ? issue.repo.split("/").pop() : null;
-  return (
-    <li>
-      <button
-        onClick={onSelect}
-        className={`w-full text-left px-4 py-1.5 flex items-center gap-2 hover:bg-slate-800/40 ${
-          selected ? "bg-slate-700/40 border-l-2 border-accent -ml-px" : ""
-        }`}
-      >
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} />
-        <span className="text-[11px] text-slate-500 tabular-nums shrink-0">
-          {showRepo && repoShort ? `${repoShort}${issue.identifier}` : issue.identifier}
-        </span>
-        <span className="text-[12px] text-slate-200 truncate flex-1">{issue.title}</span>
-      </button>
-    </li>
-  );
+/* ─────────────────────────  Command Palette  ───────────────────────── */
+
+interface Cmd {
+  id: string;
+  label: string;
+  kind: string;
+  icon: React.ComponentType<{ size?: number }>;
+  run: () => void;
 }
 
-/* ---------- main pane ---------- */
-
-function Main({
+function CommandPalette({
   snapshot,
-  view,
-  issue,
-  onView,
-}: {
-  snapshot: Snapshot | null;
-  view: View;
-  issue: Issue | null;
-  onView: (v: View) => void;
-}) {
-  if (!snapshot) {
-    return (
-      <main className="flex-1 flex items-center justify-center text-slate-500 text-sm">
-        connecting…
-      </main>
-    );
-  }
-  if (view.kind === "home") {
-    return <KanbanView snapshot={snapshot} repo={null} onView={onView} />;
-  }
-  if (view.kind === "project") {
-    return <KanbanView snapshot={snapshot} repo={view.repo} onView={onView} />;
-  }
-  if (!issue) {
-    return (
-      <main className="flex-1 flex items-center justify-center text-slate-500 text-sm">
-        issue not found in current snapshot
-      </main>
-    );
-  }
-  return <IssueDetail snapshot={snapshot} issue={issue} />;
-}
-
-function KanbanView({
-  snapshot,
-  repo,
-  onView,
+  onClose,
+  setRoute,
+  openIssue,
 }: {
   snapshot: Snapshot;
-  repo: string | null;
-  onView: (v: View) => void;
+  onClose: () => void;
+  setRoute: (r: Route) => void;
+  openIssue: (id: string) => void;
 }) {
-  const runningById = useMemo(() => {
-    const m = new Map<string, RunningRow>();
-    for (const r of snapshot.running) m.set(r.issue.id, r);
-    return m;
-  }, [snapshot]);
-  const retryById = useMemo(() => {
-    const m = new Map<string, RetryRow>();
-    for (const r of snapshot.retrying) m.set(r.issue_id, r);
-    return m;
-  }, [snapshot]);
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(0);
 
-  const board = snapshot.kanban;
-  if (!board?.loaded) {
-    return (
-      <main className="flex-1 flex items-center justify-center text-slate-500 text-sm">
-        waiting for first tracker fetch…
-      </main>
-    );
+  const navCmds: Cmd[] = [
+    { id: "go-dashboard", label: "Go to Dashboard", kind: "Navigate", icon: IconDashboard, run: () => setRoute({ name: "dashboard" }) },
+    { id: "go-agents",    label: "Go to Agents",    kind: "Navigate", icon: IconAgents,    run: () => setRoute({ name: "agents" }) },
+    { id: "go-workflows", label: "Go to Workflows", kind: "Navigate", icon: IconWorkflow,  run: () => setRoute({ name: "workflows" }) },
+    { id: "go-workers",   label: "Go to Workers",   kind: "Navigate", icon: IconWorkers,   run: () => setRoute({ name: "workers" }) },
+    { id: "go-activity",  label: "Go to Activity",  kind: "Navigate", icon: IconActivity,  run: () => setRoute({ name: "activity" }) },
+    { id: "pause-all",    label: snapshot.paused ? "Resume orchestrator" : "Pause orchestrator", kind: "Action", icon: snapshot.paused ? IconPlay : IconPause, run: () => { void fetch(`/api/control/${snapshot.paused ? "resume" : "pause"}`, { method: "POST" }); } },
+    { id: "sync",         label: "Sync issues from tracker",  kind: "Action", icon: IconRetry, run: () => {} },
+  ];
+
+  const seen = new Set<string>();
+  const issueCmds: Cmd[] = [];
+  for (const r of snapshot.running) {
+    if (seen.has(r.issue.id)) continue;
+    seen.add(r.issue.id);
+    issueCmds.push({
+      id: "iss-" + r.issue.id,
+      label: `${r.issue.identifier} · ${r.issue.title}`,
+      kind: "Issue",
+      icon: IconBranch,
+      run: () => openIssue(r.issue.id),
+    });
   }
-  if (board.columns.length === 0) {
-    return (
-      <main className="flex-1 flex items-center justify-center text-slate-500 text-sm">
-        no columns configured (set tracker.active_states / terminal_states)
-      </main>
-    );
+  for (const col of snapshot.kanban?.columns ?? []) {
+    for (const i of col.issues) {
+      if (seen.has(i.id)) continue;
+      seen.add(i.id);
+      issueCmds.push({
+        id: "iss-" + i.id,
+        label: `${i.identifier} · ${i.title}`,
+        kind: "Issue",
+        icon: IconBranch,
+        run: () => openIssue(i.id),
+      });
+    }
   }
 
-  const filterIssues = (issues: Issue[]) =>
-    repo ? issues.filter((i) => i.repo === repo) : issues;
+  const all = [...navCmds, ...issueCmds];
+  const filtered = q
+    ? all.filter((c) => c.label.toLowerCase().includes(q.toLowerCase()))
+    : all.slice(0, 12);
+
+  useEffect(() => {
+    setSel(0);
+  }, [q]);
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSel((s) => Math.min(s + 1, filtered.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSel((s) => Math.max(0, s - 1));
+    } else if (e.key === "Enter") {
+      filtered[sel]?.run();
+      onClose();
+    }
+  };
 
   return (
-    <main className="flex-1 flex flex-col min-h-0">
-      <header className="shrink-0 border-b border-border px-6 py-3 flex items-baseline gap-3">
-        <h1 className="text-sm text-slate-200 font-medium">
-          {repo ?? "All projects"}
-        </h1>
-        {repo && (
-          <a
-            href={`https://github.com/${repo}`}
-            target="_blank"
-            rel="noreferrer"
-            className="text-[10px] text-slate-600 hover:text-slate-400"
-          >
-            github ↗
-          </a>
-        )}
-      </header>
-      <div className="flex-1 overflow-x-auto">
-        <div className="px-6 py-6 flex gap-4 min-w-min items-start">
-          {board.columns.map((col) => (
-            <KanbanColumn
-              key={col.state}
-              state={col.state}
-              issues={filterIssues(col.issues)}
-              running={runningById}
-              retrying={retryById}
-              onOpenIssue={(id) => onView({ kind: "issue", id })}
-              showRepo={!repo}
-            />
-          ))}
-          {filterIssues(board.unsorted).length > 0 && (
-            <KanbanColumn
-              state="(unsorted)"
-              issues={filterIssues(board.unsorted)}
-              running={runningById}
-              retrying={retryById}
-              onOpenIssue={(id) => onView({ kind: "issue", id })}
-              showRepo={!repo}
-              muted
-            />
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-start justify-center"
+      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(2px)", paddingTop: "14vh" }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-panel border border-borderL rounded-lg overflow-hidden"
+        style={{ width: 580, maxWidth: "92vw", boxShadow: "0 24px 64px rgba(0,0,0,0.5)" }}
+      >
+        <div className="flex items-center gap-2.5 px-4 py-3.5 border-b border-borderS">
+          <span className="text-textMute">
+            <IconSearch size={16} />
+          </span>
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Type a command, search issues, or jump to a screen…"
+            className="flex-1 bg-transparent border-0 outline-0 text-text text-[14px]"
+          />
+          <Kbd>esc</Kbd>
+        </div>
+        <div className="overflow-auto p-1.5" style={{ maxHeight: 360 }}>
+          {filtered.length === 0 ? (
+            <div className="py-8 text-center text-textMute text-[12.5px]">No matches.</div>
+          ) : (
+            filtered.map((c, i) => {
+              const Icon = c.icon;
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => {
+                    c.run();
+                    onClose();
+                  }}
+                  onMouseEnter={() => setSel(i)}
+                  className="w-full flex items-center gap-3 rounded-md text-left cursor-pointer"
+                  style={{
+                    padding: "8px 10px",
+                    background: i === sel ? "#1c1c1c" : "transparent",
+                    color: "#ededed",
+                    border: 0,
+                    fontSize: 13,
+                  }}
+                >
+                  <span className="text-textDim inline-flex">
+                    <Icon size={14} />
+                  </span>
+                  <span className="flex-1 truncate">{c.label}</span>
+                  <span className="font-mono text-[10.5px] text-textMute uppercase" style={{ letterSpacing: 0.4 }}>
+                    {c.kind}
+                  </span>
+                </button>
+              );
+            })
           )}
         </div>
-      </div>
-    </main>
-  );
-}
-
-function KanbanColumn({
-  state,
-  issues,
-  running,
-  retrying,
-  onOpenIssue,
-  showRepo,
-  muted = false,
-}: {
-  state: string;
-  issues: Issue[];
-  running: Map<string, RunningRow>;
-  retrying: Map<string, RetryRow>;
-  onOpenIssue: (id: string) => void;
-  showRepo: boolean;
-  muted?: boolean;
-}) {
-  return (
-    <section
-      className={`panel flex-shrink-0 w-72 flex flex-col ${
-        muted ? "opacity-60" : ""
-      }`}
-    >
-      <header className="px-3 py-2 border-b border-border flex items-center justify-between">
-        <h2 className="text-xs uppercase tracking-wider text-slate-300 font-medium">
-          {prettyState(state)}
-        </h2>
-        <span className="text-xs text-slate-500 tabular-nums">{issues.length}</span>
-      </header>
-      <ol className="flex-1 overflow-y-auto p-2 space-y-2 max-h-[calc(100vh-200px)]">
-        {issues.length === 0 ? (
-          <li className="text-xs text-slate-600 px-2 py-6 text-center">empty</li>
-        ) : (
-          issues.map((issue) => (
-            <KanbanCard
-              key={issue.id}
-              issue={issue}
-              running={running.get(issue.id)}
-              retry={retrying.get(issue.id)}
-              onOpen={() => onOpenIssue(issue.id)}
-              showRepo={showRepo}
-            />
-          ))
-        )}
-      </ol>
-    </section>
-  );
-}
-
-function KanbanCard({
-  issue,
-  running,
-  retry,
-  onOpen,
-  showRepo,
-}: {
-  issue: Issue;
-  running?: RunningRow;
-  retry?: RetryRow;
-  onOpen: () => void;
-  showRepo: boolean;
-}) {
-  const live = !!running;
-  const queued = !!retry;
-  const ringCls = live
-    ? "ring-1 ring-accent/60"
-    : queued
-    ? "ring-1 ring-warn/40"
-    : "";
-  return (
-    <li
-      onClick={onOpen}
-      className={`bg-bg/60 border border-border rounded p-2.5 hover:border-slate-500 transition-colors cursor-pointer ${ringCls}`}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <a
-          href={issue.url ?? "#"}
-          target="_blank"
-          rel="noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          className="text-accent text-xs tabular-nums hover:underline truncate"
-        >
-          {showRepo && issue.repo
-            ? `${issue.repo.split("/").pop()}${issue.identifier}`
-            : issue.identifier}
-        </a>
-        {live && <span className="pill pill-ok text-[9px]">running</span>}
-        {!live && queued && (
-          <span className="pill pill-warn text-[9px]">retry</span>
-        )}
-      </div>
-      <div className="text-sm text-slate-200 mt-1 leading-snug line-clamp-3">
-        {issue.title}
-      </div>
-      {issue.labels.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1">
-          {issue.labels
-            .filter((l) => !l.startsWith("status:"))
-            .slice(0, 4)
-            .map((l) => (
-              <span
-                key={l}
-                className="pill pill-muted text-[9px] normal-case tracking-normal"
-              >
-                {l}
-              </span>
-            ))}
-        </div>
-      )}
-      {live && (
-        <div className="mt-2 pt-2 border-t border-border/60 text-[10px] text-slate-500 tabular-nums flex justify-between">
-          <span>turn {running!.turn_count}</span>
-          <span>{formatNumber(running!.tokens_total)} tok</span>
-        </div>
-      )}
-    </li>
-  );
-}
-
-
-function IssueDetail({ snapshot, issue }: { snapshot: Snapshot; issue: Issue }) {
-  const log = useSessionLog(issue.id);
-  const live = snapshot.running.find((r) => r.issue.id === issue.id);
-  const retry = snapshot.retrying.find((r) => r.issue_id === issue.id);
-
-  return (
-    <main className="flex-1 flex flex-col min-h-0">
-      <div className="shrink-0 border-b border-border px-6 py-4">
-        <div className="flex items-baseline gap-3">
-          <a
-            href={issue.url ?? "#"}
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent text-xs tabular-nums hover:underline"
-          >
-            {issue.identifier}
-          </a>
-          <span className="text-[10px] text-slate-500">
-            {issue.state}
-            {issue.updated_at && <> · updated {relTime(issue.updated_at)}</>}
+        <div className="flex gap-3.5 px-4 py-2 border-t border-borderS text-[11px] text-textMute font-mono">
+          <span>
+            <Kbd>↑</Kbd> <Kbd>↓</Kbd> navigate
           </span>
+          <span>
+            <Kbd>↵</Kbd> select
+          </span>
+          <span className="ml-auto">{filtered.length} results</span>
         </div>
-        <h2 className="text-base text-slate-100 mt-1 leading-snug">{issue.title}</h2>
-        {issue.labels.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {issue.labels.map((l) => (
-              <span
-                key={l}
-                className="pill pill-muted text-[9px] normal-case tracking-normal"
-              >
-                {l}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {(live || retry) && (
-        <div className="shrink-0 border-b border-border/60 bg-bg/40 px-6 py-2 grid grid-cols-4 gap-4 text-[11px] tabular-nums">
-          {live ? (
-            <>
-              <Stat label="turn" value={`${live.turn_count}`} />
-              <Stat label="tokens" value={formatNumber(live.tokens_total)} />
-              <Stat label="last event" value={live.last_event ?? "—"} truncate />
-              <Stat label="started" value={relTime(live.started_at)} />
-            </>
-          ) : retry ? (
-            <>
-              <Stat label="retry" value={`#${retry.attempt}`} />
-              <Stat label="due" value={relTime(retry.due_at)} />
-              <Stat
-                label="error"
-                value={retry.error ?? "—"}
-                truncate
-                tone="text-err/80"
-              />
-            </>
-          ) : null}
-        </div>
-      )}
-
-      {issue.description && (
-        <details className="shrink-0 border-b border-border/40 px-6 py-2">
-          <summary className="text-[10px] uppercase tracking-wider text-slate-500 cursor-pointer hover:text-slate-300">
-            description
-          </summary>
-          <pre className="mt-2 text-xs text-slate-400 whitespace-pre-wrap leading-relaxed">
-            {issue.description}
-          </pre>
-        </details>
-      )}
-
-      <div className="flex-1 overflow-y-auto px-6 py-4">
-        <h3 className="text-[10px] uppercase tracking-wider text-slate-500 mb-3">
-          session log
-        </h3>
-        <LogList log={log} />
-      </div>
-    </main>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  truncate = false,
-  tone,
-}: {
-  label: string;
-  value: string;
-  truncate?: boolean;
-  tone?: string;
-}) {
-  return (
-    <div className="min-w-0">
-      <div className="text-[9px] uppercase tracking-wider text-slate-500">
-        {label}
-      </div>
-      <div
-        className={`text-slate-300 ${truncate ? "truncate" : ""} ${tone ?? ""}`}
-        title={truncate ? value : undefined}
-      >
-        {value}
       </div>
     </div>
   );
 }
 
-/* ---------- log ---------- */
-
-function LogList({ log }: { log: ReturnType<typeof useSessionLog> }) {
-  if (log === undefined) {
-    return <div className="text-xs text-slate-500 text-center py-8">loading log…</div>;
-  }
-  if (log === null) {
-    return (
-      <div className="text-xs text-slate-500 text-center py-8">
-        no session log (issue hasn't run, or log was evicted)
-      </div>
-    );
-  }
-  if (log.entries.length === 0) {
-    return <div className="text-xs text-slate-500 text-center py-8">no events yet</div>;
-  }
-  return (
-    <ol className="space-y-1.5">
-      {log.entries.map((e, i) => (
-        <LogRow key={i} entry={e} />
-      ))}
-    </ol>
-  );
-}
-
-function LogRow({ entry }: { entry: SessionLogEntry }) {
-  const [open, setOpen] = useState(false);
-  const tone = toneFor(entry.kind);
-  return (
-    <li className="text-[11px] leading-snug">
-      <div className="flex items-baseline gap-2">
-        <span className="text-slate-600 tabular-nums shrink-0 w-12">
-          {relTime(entry.at)}
-        </span>
-        <span className={`shrink-0 ${tone}`}>{entry.kind}</span>
-      </div>
-      <div className="ml-14 text-slate-300 break-words">{entry.summary}</div>
-      {entry.detail !== null && entry.detail !== undefined && (
-        <div className="ml-14 mt-1">
-          <button
-            onClick={() => setOpen((v) => !v)}
-            className="text-[10px] text-slate-600 hover:text-slate-400"
-          >
-            {open ? "hide raw" : "raw"}
-          </button>
-          {open && (
-            <pre className="mt-1 bg-black/40 p-2 rounded overflow-x-auto text-[10px] text-slate-400">
-              {JSON.stringify(entry.detail, null, 2)}
-            </pre>
-          )}
-        </div>
-      )}
-    </li>
-  );
-}
-
-function toneFor(kind: string): string {
-  if (kind.includes("failed") || kind.includes("error") || kind === "malformed")
-    return "text-err";
-  if (kind === "turn_completed" || kind === "session_started") return "text-ok";
-  if (kind === "agent_message_delta") return "text-accent/80";
-  if (kind.startsWith("approval")) return "text-warn";
-  return "text-slate-500";
-}
-
-function prettyState(s: string): string {
-  if (s === "closed") return "Closed";
-  if (s === "open") return "Open";
-  if (s.startsWith("status:")) return s.slice(7).replace(/-/g, " ");
-  return s;
-}
+// Re-export for any deep references; the new design supersedes the old shell.
+export { fmtElapsed };
