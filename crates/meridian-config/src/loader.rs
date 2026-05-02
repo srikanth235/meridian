@@ -114,4 +114,67 @@ mod tests {
         let err = parse_workflow(&PathBuf::from("WORKFLOW.md"), src).unwrap_err();
         assert!(matches!(err, ConfigError::WorkflowFrontMatterNotAMap));
     }
+
+    /// Smoke test: the real `WORKFLOW.md` at the repo root parses,
+    /// preflights, and both prompt branches (issue + pr_review) render
+    /// without Liquid errors.
+    #[test]
+    fn real_workflow_md_renders_both_branches() {
+        use chrono::Utc;
+        use crate::prompt::render_prompt;
+        use meridian_core::Issue;
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let path = PathBuf::from(manifest_dir).join("../../WORKFLOW.md");
+        let src = std::fs::read_to_string(&path)
+            .expect("repo-root WORKFLOW.md missing or unreadable");
+        let wf = parse_workflow(&path, &src).expect("WORKFLOW.md must parse");
+        wf.config.preflight().expect("WORKFLOW.md preflight must pass");
+
+        let issue = Issue {
+            id: "owner/repo/1".into(),
+            identifier: "#1".into(),
+            title: "Fix login".into(),
+            description: Some("the login is broken".into()),
+            priority: None,
+            state: "status:todo".into(),
+            branch_name: Some("issue-1-fix-login".into()),
+            url: Some("https://github.com/owner/repo/issues/1".into()),
+            labels: vec!["status:todo".into()],
+            blocked_by: vec![],
+            created_at: Some(Utc::now()),
+            updated_at: None,
+            repo: Some("owner/repo".into()),
+            kind: "issue".into(),
+            author: None,
+        };
+        let issue_out = render_prompt(&wf.prompt_template, &issue, None)
+            .expect("issue branch must render");
+        assert!(issue_out.contains("GitHub issue"), "issue branch output: {issue_out}");
+        assert!(!issue_out.contains("review agent"));
+
+        let pr = Issue {
+            id: "owner/repo/pr/7".into(),
+            identifier: "PR #7".into(),
+            title: "Add feature X".into(),
+            description: Some("Closes #1".into()),
+            priority: None,
+            state: "pr:pending-review".into(),
+            branch_name: Some("feat-x".into()),
+            url: Some("https://github.com/owner/repo/pull/7".into()),
+            labels: vec!["feature".into()],
+            blocked_by: vec![],
+            created_at: Some(Utc::now()),
+            updated_at: None,
+            repo: Some("owner/repo".into()),
+            kind: "pr_review".into(),
+            author: Some("alice".into()),
+        };
+        let pr_out = render_prompt(&wf.prompt_template, &pr, None)
+            .expect("pr_review branch must render");
+        assert!(pr_out.contains("review agent"), "pr branch output: {pr_out}");
+        assert!(pr_out.contains("PR #7"));
+        assert!(pr_out.contains("alice"));
+        assert!(!pr_out.contains("GitHub issue **PR #7**"));
+    }
 }

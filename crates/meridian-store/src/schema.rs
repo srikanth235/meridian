@@ -8,10 +8,13 @@ use rusqlite::Connection;
 use crate::error::StoreError;
 
 /// Bumped whenever a migration is appended below.
-pub const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 2;
 
 /// All migrations, in order. Append-only.
-pub const MIGRATIONS: &[(u32, &str)] = &[(1, MIGRATION_001_INITIAL)];
+pub const MIGRATIONS: &[(u32, &str)] = &[
+    (1, MIGRATION_001_INITIAL),
+    (2, MIGRATION_002_ISSUE_KIND),
+];
 
 pub fn apply_all(conn: &mut Connection) -> Result<(), StoreError> {
     conn.execute_batch(
@@ -349,4 +352,13 @@ CREATE TABLE session_event (
     payload_json    TEXT
 );
 CREATE INDEX idx_session_event_attempt ON session_event(run_attempt_id, ts);
+"#;
+
+/// Adds `kind` and `author` columns to `issue` so PR-review tasks can be
+/// stored alongside regular issues. `kind` is one of {"issue","pr_review"};
+/// `author` carries the upstream PR author login (NULL for issues).
+const MIGRATION_002_ISSUE_KIND: &str = r#"
+ALTER TABLE issue ADD COLUMN kind   TEXT NOT NULL DEFAULT 'issue';
+ALTER TABLE issue ADD COLUMN author TEXT;
+CREATE INDEX idx_issue_kind ON issue(kind);
 "#;

@@ -38,6 +38,8 @@ fn issue() -> Issue {
         created_at: Some(Utc::now()),
         updated_at: None,
         repo: None,
+        kind: "issue".into(),
+        author: None,
     }
 }
 

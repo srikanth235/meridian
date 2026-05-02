@@ -368,15 +368,23 @@ impl Store {
                 format!("{}/{}", team_key.to_lowercase(), slugify(&new.title, number))
             });
 
+            let kind = new
+                .kind
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("issue")
+                .to_string();
             tx.execute(
                 "INSERT INTO issue (
                     id, team_id, number, identifier, title, description,
                     priority, estimate, state_id, project_id, cycle_id,
-                    parent_id, assignee_id, creator_id, branch_name, url, due_date
+                    parent_id, assignee_id, creator_id, branch_name, url, due_date,
+                    kind, author
                  ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6,
                     ?7, ?8, ?9, ?10, ?11,
-                    ?12, ?13, ?14, ?15, ?16, ?17
+                    ?12, ?13, ?14, ?15, ?16, ?17,
+                    ?18, ?19
                  )",
                 rusqlite::params![
                     id,
@@ -396,6 +404,8 @@ impl Store {
                     branch_name,
                     new.url,
                     new.due_date,
+                    kind,
+                    new.author,
                 ],
             )?;
 
@@ -1038,7 +1048,7 @@ fn fetch_issue_by_id(conn: &Connection, id: &str) -> Result<Option<IssueRecord>,
                     i.assignee_id, i.creator_id, i.branch_name, i.url,
                     i.sort_order, i.sub_issue_sort_order, i.due_date,
                     i.started_at, i.completed_at, i.canceled_at, i.archived_at, i.snoozed_until,
-                    i.trashed, i.created_at, i.updated_at
+                    i.trashed, i.created_at, i.updated_at, i.kind, i.author
              FROM issue i
              JOIN workflow_state s ON s.id = i.state_id
              JOIN team t ON t.id = i.team_id
@@ -1079,6 +1089,8 @@ fn fetch_issue_by_id(conn: &Connection, id: &str) -> Result<Option<IssueRecord>,
                     trashed: row.get::<_, i64>(28)? != 0,
                     created_at: row.get(29)?,
                     updated_at: row.get(30)?,
+                    kind: row.get(31)?,
+                    author: row.get(32)?,
                     labels: Vec::new(),
                     blocked_by: Vec::new(),
                 })
@@ -1170,6 +1182,9 @@ mod tests {
         assert_eq!(issue.state_type, WorkflowStateType::Unstarted);
         assert_eq!(issue.labels, vec!["bug".to_string()]);
         assert!(issue.branch_name.as_deref().unwrap().starts_with("eng/1-"));
+        // Default kind is `issue`; author empty.
+        assert_eq!(issue.kind, "issue");
+        assert!(issue.author.is_none());
 
         let by_state = s
             .fetch_issues_by_state_names(&["Todo".to_string()])
@@ -1226,6 +1241,34 @@ mod tests {
         assert_eq!(blocked_full.blocked_by.len(), 1);
         assert_eq!(blocked_full.blocked_by[0].id, blocker.id);
         assert_eq!(blocked_full.blocked_by[0].identifier, "ENG-1");
+    }
+
+    #[tokio::test]
+    async fn create_pr_review_row_persists_kind_and_author() {
+        let s = fixture().await;
+        let ws = s.create_workspace("Acme", "acme").await.unwrap();
+        let team = s.create_team(&ws.id, "ENG", "Engineering").await.unwrap();
+        let states = s.seed_default_workflow_states(&team.id).await.unwrap();
+
+        let pr = s
+            .create_issue(NewIssue {
+                team_id: team.id.clone(),
+                state_id: states.todo.id.clone(),
+                title: "Add feature X".into(),
+                kind: Some("pr_review".into()),
+                author: Some("alice".into()),
+                url: Some("https://github.com/o/r/pull/7".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(pr.kind, "pr_review");
+        assert_eq!(pr.author.as_deref(), Some("alice"));
+
+        let fetched = s.get_issue(&pr.id).await.unwrap().unwrap();
+        assert_eq!(fetched.kind, "pr_review");
+        assert_eq!(fetched.author.as_deref(), Some("alice"));
     }
 
     #[tokio::test]

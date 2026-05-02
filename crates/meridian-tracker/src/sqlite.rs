@@ -71,6 +71,8 @@ fn record_to_issue(rec: IssueRecord) -> Issue {
         created_at: Some(rec.created_at),
         updated_at: Some(rec.updated_at),
         repo: Some(rec.team_key),
+        kind: rec.kind,
+        author: rec.author,
     }
 }
 

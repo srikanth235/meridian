@@ -10,7 +10,7 @@
   <rect width="1024" height="1024" fill="url(#bg)"/>
 
   <!-- Uniform stroke: same width, same color, same opacity for every line. -->
-  <g fill="none" stroke="#7c3aed" stroke-width="20" stroke-linecap="round">
+  <g fill="none" stroke="#10b981" stroke-width="20" stroke-linecap="round">
     <!-- Globe equator -->
     <circle cx="512" cy="512" r="300"/>
     <!-- Front-facing meridian arc -->
