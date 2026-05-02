@@ -1,5 +1,6 @@
 // Meridian atoms — small visual primitives shared across screens.
 import type { ReactNode } from "react";
+import type { Harness, HarnessId } from "./types";
 
 export type SymStatus = "running" | "queued" | "review" | "failed" | "merged";
 
@@ -223,6 +224,99 @@ export function TabPill({
     >
       {children}
     </button>
+  );
+}
+
+export function HarnessAvatar({
+  harness,
+  size = 18,
+  title,
+}: {
+  harness: Harness | undefined | null;
+  size?: number;
+  title?: string;
+}) {
+  if (!harness) {
+    return (
+      <span
+        title={title ?? "Unassigned"}
+        className="font-mono text-textMute inline-flex items-center justify-center shrink-0"
+        style={{
+          width: size,
+          height: size,
+          borderRadius: "50%",
+          background: "var(--panel3)",
+          border: "1px dashed var(--border)",
+          fontSize: Math.max(8, size * 0.45),
+        }}
+      >
+        ?
+      </span>
+    );
+  }
+  const initials = harness.name
+    .split(/[\s-]+/)
+    .map((p) => p[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  return (
+    <span
+      title={title ?? harness.name}
+      className="text-white font-semibold inline-flex items-center justify-center shrink-0"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: harness.color,
+        fontSize: Math.max(8, size * 0.42),
+        letterSpacing: -0.2,
+        opacity: harness.available ? 1 : 0.5,
+      }}
+    >
+      {initials}
+    </span>
+  );
+}
+
+export function harnessById(
+  harnesses: Harness[] | undefined,
+  id: HarnessId | null | undefined,
+): Harness | undefined {
+  if (!id || !harnesses) return undefined;
+  return harnesses.find((h) => h.id === id);
+}
+
+export function RepoChip({ repo }: { repo?: string | null }) {
+  if (!repo) return null;
+  const parts = repo.split("/");
+  const short = parts[parts.length - 1] ?? repo;
+  return (
+    <span
+      title={repo}
+      className="font-mono text-textMute inline-flex items-center"
+      style={{
+        fontSize: 10.5,
+        padding: "1px 6px",
+        borderRadius: 4,
+        background: "var(--panel3)",
+        border: "1px solid var(--borderS)",
+      }}
+    >
+      {short}
+    </span>
+  );
+}
+
+export function TypePill({ type }: { type?: "issue" | "pr" | null }) {
+  if (!type) return null;
+  return (
+    <span
+      className={`pill pill-${type === "pr" ? "blue" : "muted"}`}
+      style={{ textTransform: "uppercase", letterSpacing: 0.5, fontSize: 9.5, padding: "1px 5px" }}
+    >
+      {type === "pr" ? "PR" : "Issue"}
+    </span>
   );
 }
 

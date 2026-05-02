@@ -146,3 +146,79 @@ export function IconMoon({ size = 14, ...rest }: IconProps) {
     </svg>
   );
 }
+export function IconInbox({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+    </svg>
+  );
+}
+export function IconTasks({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <rect x="3" y="3" width="6" height="18" rx="1.5" />
+      <rect x="11" y="3" width="6" height="11" rx="1.5" />
+      <rect x="11" y="16" width="6" height="5" rx="1.5" opacity="0.5" />
+    </svg>
+  );
+}
+export function IconLive({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M5.5 5.5a9 9 0 0 0 0 13" />
+      <path d="M18.5 18.5a9 9 0 0 0 0-13" />
+    </svg>
+  );
+}
+export function IconTeam({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <circle cx="9" cy="8" r="3" />
+      <circle cx="17" cy="9" r="2.2" />
+      <path d="M3 19c.5-3 3-5 6-5s5.5 2 6 5" />
+      <path d="M15 19c.4-2 1.7-3 3-3s2.6 1 3 3" />
+    </svg>
+  );
+}
+export function IconRepos({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v17H6.5a2.5 2.5 0 0 0 0 5H20" />
+      <path d="M4 4.5V19" />
+    </svg>
+  );
+}
+export function IconChevronDown({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+export function IconCheck({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="m5 12 5 5L20 7" />
+    </svg>
+  );
+}
+export function IconX({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+export function IconPullRequest({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <circle cx="6" cy="6" r="2" />
+      <circle cx="6" cy="18" r="2" />
+      <circle cx="18" cy="18" r="2" />
+      <path d="M6 8v8" />
+      <path d="M18 16V9a3 3 0 0 0-3-3h-3l2-2m0 4-2-2" />
+    </svg>
+  );
+}

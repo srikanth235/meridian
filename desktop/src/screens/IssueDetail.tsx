@@ -1,24 +1,41 @@
 import { useState } from "react";
-import type { Issue, RetryRow, RunningRow, SessionLogEntry, Snapshot } from "../types";
+import type { HarnessId, Issue, RetryRow, RunningRow, SessionLogEntry, Snapshot } from "../types";
 import { useSessionLog } from "../useSessionLog";
 import { formatNumber, relTime } from "../format";
-import { Card, CardHead, Pill, Progress, StatusDot, fmtElapsed, STATUS_META } from "../atoms";
+import {
+  Card,
+  CardHead,
+  HarnessAvatar,
+  Pill,
+  Progress,
+  RepoChip,
+  StatusDot,
+  TypePill,
+  fmtElapsed,
+  harnessById,
+  STATUS_META,
+} from "../atoms";
 import { IconBranch, IconChevronLeft } from "../icons";
 import { runningAgents, type SymAgent } from "../symphonyMap";
+import { AssignMenu } from "./AssignMenu";
 
 export function IssueDetail({
   snapshot,
   issue,
   onBack,
+  onAssign,
 }: {
   snapshot: Snapshot;
   issue: Issue;
   onBack: () => void;
+  onAssign: (issueId: string, harness: HarnessId | null) => void;
 }) {
   const log = useSessionLog(issue.id);
   const live = snapshot.running.find((r) => r.issue.id === issue.id);
   const retry = snapshot.retrying.find((r) => r.issue_id === issue.id);
   const sym = deriveSym(issue, snapshot, live, retry);
+  const harnesses = snapshot.harnesses ?? [];
+  const harness = harnessById(harnesses, issue.assignee);
 
   return (
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 20 }}>
@@ -27,29 +44,39 @@ export function IssueDetail({
         className="flex items-center gap-1.5 text-[12px] text-textDim hover:text-text bg-transparent border-0 cursor-pointer p-0 self-start"
       >
         <IconChevronLeft size={14} />
-        Back to agents
+        Back to tasks
       </button>
 
       <div>
-        <div className="flex items-center gap-2 mb-1.5">
+        <div className="flex items-center gap-2 mb-1.5 flex-wrap">
           <StatusDot status={sym.status} />
           <span className="font-mono text-[11.5px] text-textDim font-medium">{sym.id}</span>
           <Pill tone={pillTone(sym.status)}>{STATUS_META[sym.status].label}</Pill>
-          {issue.url && (
-            <a
-              href={issue.url}
-              target="_blank"
-              rel="noreferrer"
-              className="font-mono text-[11px] text-textMute hover:text-textDim ml-auto"
-            >
-              github ↗
-            </a>
-          )}
+          <TypePill type={issue.type} />
+          <RepoChip repo={issue.repo} />
+          <div className="ml-auto flex items-center gap-2">
+            <AssignMenu
+              harnesses={harnesses}
+              current={issue.assignee ?? null}
+              onAssign={(h) => onAssign(issue.id, h)}
+              size="md"
+            />
+            {issue.url && (
+              <a
+                href={issue.url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-[11px] text-textMute hover:text-textDim"
+              >
+                github ↗
+              </a>
+            )}
+          </div>
         </div>
         <h1 className="text-[20px] font-semibold text-text leading-snug m-0" style={{ letterSpacing: -0.2 }}>
           {issue.title}
         </h1>
-        <div className="flex items-center gap-2 mt-2 text-[11.5px] text-textMute">
+        <div className="flex items-center gap-2 mt-2 text-[11.5px] text-textMute flex-wrap">
           {sym.branch && (
             <>
               <IconBranch size={11} />
@@ -57,12 +84,12 @@ export function IssueDetail({
               <span>·</span>
             </>
           )}
-          {sym.workflow && <span>{sym.workflow}</span>}
-          {sym.worker && (
-            <>
-              <span>·</span>
-              <span className="font-mono">{sym.worker}</span>
-            </>
+          {harness ? (
+            <span className="inline-flex items-center gap-1.5">
+              <HarnessAvatar harness={harness} size={14} /> {harness.name}
+            </span>
+          ) : (
+            <span>Unassigned</span>
           )}
         </div>
 
@@ -148,7 +175,7 @@ function deriveSym(
   issue: Issue,
   snapshot: Snapshot,
   live: RunningRow | undefined,
-  retry: RetryRow | undefined
+  retry: RetryRow | undefined,
 ): SymAgent {
   if (live) {
     return runningAgents(snapshot).find((a) => a.internalId === issue.id)!;
@@ -166,6 +193,8 @@ function deriveSym(
     elapsedSec: 0,
     url: issue.url ?? null,
     labels: issue.labels,
+    harness: issue.assignee ?? null,
+    repo: issue.repo ?? null,
   };
 }
 
