@@ -1,18 +1,45 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { Harness, HarnessId, Snapshot } from "../types";
-import { Card, HarnessAvatar, Pill, Progress } from "../atoms";
+import { Card, HarnessAvatar, PageSearch, Pill, Progress } from "../atoms";
+import { harnessMatches } from "../search";
 
 export function Harnesses({
   snapshot,
   density,
+  query,
+  onQueryChange,
   onSetConcurrency,
 }: {
   snapshot: Snapshot;
   density: "comfortable" | "dense";
+  query: string;
+  onQueryChange: (q: string) => void;
   onSetConcurrency: (id: HarnessId, n: number) => void;
 }) {
   const pad = density === "dense" ? 14 : 20;
   const harnesses = snapshot.harnesses ?? [];
+  const filtered = useMemo(
+    () => harnesses.filter((h) => harnessMatches(h, query)),
+    [harnesses, query],
+  );
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+
+  const onRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshError(null);
+    try {
+      const res = await fetch("/api/harnesses/refresh", { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Snapshot is pushed via WS on StateChanged, so the UI will reflect
+      // the new list automatically — no need to merge the response here.
+    } catch (e) {
+      setRefreshError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const inFlightById = useMemo(() => {
     const m = new Map<HarnessId, number>();
@@ -38,12 +65,33 @@ export function Harnesses({
           </h1>
           <div className="text-[13px] text-textDim mt-1">
             {available}/{harnesses.length} available · {totalLoad}/{totalCap} concurrent slots used
+            {refreshError && (
+              <span className="ml-2 text-err">· refresh failed: {refreshError}</span>
+            )}
           </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <PageSearch
+            pageId="harnesses"
+            value={query}
+            onChange={onQueryChange}
+            placeholder="Search harnesses…"
+          />
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing}
+            title="Re-scan PATH for installed harness CLIs"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border bg-panel2 hover:bg-panel3 text-[12px] font-medium text-text disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+          >
+            <RefreshIcon spinning={refreshing} />
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </button>
         </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: pad }}>
-        {harnesses.map((h) => (
+        {filtered.map((h) => (
           <HarnessCard
             key={h.id}
             harness={h}
@@ -53,6 +101,28 @@ export function Harnesses({
         ))}
       </div>
     </div>
+  );
+}
+
+function RefreshIcon({ spinning }: { spinning: boolean }) {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={spinning ? { animation: "meridian-spin 0.8s linear infinite" } : undefined}
+      aria-hidden
+    >
+      <path d="M21 12a9 9 0 0 1-15.36 6.36L3 16" />
+      <path d="M3 12a9 9 0 0 1 15.36-6.36L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M3 21v-5h5" />
+    </svg>
   );
 }
 

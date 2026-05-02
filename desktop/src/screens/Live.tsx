@@ -3,6 +3,7 @@ import type { Snapshot } from "../types";
 import {
   Card,
   HarnessAvatar,
+  PageSearch,
   Pill,
   Progress,
   RepoChip,
@@ -12,26 +13,32 @@ import {
   harnessById,
 } from "../atoms";
 import { IconBranch, IconRetry } from "../icons";
+import { issueMatches } from "../search";
 
 export function Live({
   snapshot,
   density,
   onOpenIssue,
   repoFilter,
+  query,
+  onQueryChange,
 }: {
   snapshot: Snapshot;
   density: "comfortable" | "dense";
   onOpenIssue: (id: string) => void;
   repoFilter: string | null;
+  query: string;
+  onQueryChange: (q: string) => void;
 }) {
   const pad = density === "dense" ? 14 : 20;
   const harnesses = snapshot.harnesses ?? [];
 
   const running = useMemo(() => {
-    const r = snapshot.running;
-    if (!repoFilter) return r;
-    return r.filter((row) => row.issue.repo === repoFilter);
-  }, [snapshot.running, repoFilter]);
+    let r = snapshot.running;
+    if (repoFilter) r = r.filter((row) => row.issue.repo === repoFilter);
+    if (query) r = r.filter((row) => issueMatches(row.issue, query));
+    return r;
+  }, [snapshot.running, repoFilter, query]);
 
   const retrying = useMemo(() => {
     return snapshot.retrying;
@@ -50,6 +57,12 @@ export function Live({
             {repoFilter && <> · scoped to <span className="font-mono">{repoFilter}</span></>}
           </div>
         </div>
+        <PageSearch
+          pageId="live"
+          value={query}
+          onChange={onQueryChange}
+          placeholder="Search live…"
+        />
       </div>
 
       <Card>

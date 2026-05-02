@@ -1,14 +1,17 @@
 import { useMemo } from "react";
 import type { HarnessId, Issue, Snapshot } from "../types";
-import { Card, Pill, RepoChip, TypePill } from "../atoms";
+import { Card, PageSearch, Pill, RepoChip, TypePill } from "../atoms";
 import { IconInbox, IconX } from "../icons";
 import { inboxIssues } from "../symphonyMap";
+import { issueMatches } from "../search";
 import { AssignMenu } from "./AssignMenu";
 
 export function Inbox({
   snapshot,
   density,
   repoFilter,
+  query,
+  onQueryChange,
   onOpenIssue,
   onAssign,
   onIgnore,
@@ -16,6 +19,8 @@ export function Inbox({
   snapshot: Snapshot;
   density: "comfortable" | "dense";
   repoFilter: string | null;
+  query: string;
+  onQueryChange: (q: string) => void;
   onOpenIssue: (id: string) => void;
   onAssign: (issueId: string, harness: HarnessId | null) => void;
   onIgnore: (issueId: string) => void;
@@ -23,10 +28,11 @@ export function Inbox({
   const harnesses = snapshot.harnesses ?? [];
   const pad = density === "dense" ? 14 : 20;
   const items = useMemo(() => {
-    const all = inboxIssues(snapshot);
-    if (!repoFilter) return all;
-    return all.filter((i) => i.repo === repoFilter);
-  }, [snapshot, repoFilter]);
+    let all = inboxIssues(snapshot);
+    if (repoFilter) all = all.filter((i) => i.repo === repoFilter);
+    if (query) all = all.filter((i) => issueMatches(i, query));
+    return all;
+  }, [snapshot, repoFilter, query]);
 
   return (
     <div style={{ padding: pad, display: "flex", flexDirection: "column", gap: pad }}>
@@ -41,6 +47,12 @@ export function Inbox({
             {repoFilter && <> · scoped to <span className="font-mono">{repoFilter}</span></>}
           </div>
         </div>
+        <PageSearch
+          pageId="inbox"
+          value={query}
+          onChange={onQueryChange}
+          placeholder="Search inbox…"
+        />
       </div>
 
       <Card>

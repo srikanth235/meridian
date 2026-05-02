@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useSnapshot } from "./useSnapshot";
-import type { Harness, HarnessId, Issue, Snapshot } from "./types";
+import type { HarnessId, Issue, Snapshot } from "./types";
 import { Kbd } from "./atoms";
 import {
   IconActivity,
@@ -46,7 +46,6 @@ type Theme = "dark" | "light";
 const THEME_KEY = "meridian.theme";
 const REPO_FILTER_KEY = "meridian.repoFilter";
 const OVERRIDES_KEY = "meridian.overrides";
-const HARNESS_OVERRIDES_KEY = "meridian.harnessOverrides";
 
 interface IssueOverride {
   assignee?: HarnessId | null;
@@ -89,14 +88,16 @@ export function App() {
   const [overrides, setOverrides] = useState<Record<string, IssueOverride>>(() =>
     loadJson(OVERRIDES_KEY, {} as Record<string, IssueOverride>),
   );
-  const [harnessOverrides, setHarnessOverrides] = useState<Record<string, number>>(() =>
-    loadJson(HARNESS_OVERRIDES_KEY, {} as Record<string, number>),
-  );
+  // Per-page search query. Keyed by page id so switching tabs doesn't lose
+  // the current filter; not persisted across sessions (Linear-style: search
+  // is ephemeral).
+  const [search, setSearch] = useState<Record<string, string>>({});
+  const setPageQuery = (page: string, q: string) =>
+    setSearch((prev) => ({ ...prev, [page]: q }));
 
   useEffect(() => { applyTheme(theme); try { localStorage.setItem(THEME_KEY, theme); } catch {} }, [theme]);
   useEffect(() => { saveJson(REPO_FILTER_KEY, repoFilter); }, [repoFilter]);
   useEffect(() => { saveJson(OVERRIDES_KEY, overrides); }, [overrides]);
-  useEffect(() => { saveJson(HARNESS_OVERRIDES_KEY, harnessOverrides); }, [harnessOverrides]);
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
 
@@ -125,8 +126,8 @@ export function App() {
   // yet persist assignment / triage state, so the UI tracks it client-side.
   const snapshot = useMemo<Snapshot | null>(() => {
     if (!rawSnapshot) return null;
-    return mergeOverrides(rawSnapshot, overrides, harnessOverrides);
-  }, [rawSnapshot, overrides, harnessOverrides]);
+    return mergeOverrides(rawSnapshot, overrides);
+  }, [rawSnapshot, overrides]);
 
   const selectedIssue = useMemo<Issue | null>(() => {
     if (route.name !== "issue" || !snapshot) return null;
@@ -154,8 +155,17 @@ export function App() {
     }));
   };
 
-  const setHarnessConcurrency = (id: HarnessId, n: number) => {
-    setHarnessOverrides((prev) => ({ ...prev, [id]: n }));
+  const setHarnessConcurrency = async (id: HarnessId, n: number) => {
+    try {
+      const res = await fetch("/api/harnesses/concurrency", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, concurrency: n }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      console.error("set concurrency failed", e);
+    }
   };
 
   return (
@@ -187,6 +197,8 @@ export function App() {
               snapshot={snapshot}
               density="comfortable"
               repoFilter={repoFilter}
+              query={search.inbox ?? ""}
+              onQueryChange={(q) => setPageQuery("inbox", q)}
               onOpenIssue={openIssue}
               onAssign={assignTask}
               onIgnore={ignoreTask}
@@ -197,6 +209,8 @@ export function App() {
               density="comfortable"
               onOpenIssue={openIssue}
               repoFilter={repoFilter}
+              query={search.tasks ?? ""}
+              onQueryChange={(q) => setPageQuery("tasks", q)}
               onAssign={assignTask}
             />
           ) : route.name === "live" ? (
@@ -205,11 +219,15 @@ export function App() {
               density="comfortable"
               onOpenIssue={openIssue}
               repoFilter={repoFilter}
+              query={search.live ?? ""}
+              onQueryChange={(q) => setPageQuery("live", q)}
             />
           ) : route.name === "harnesses" ? (
             <Harnesses
               snapshot={snapshot}
               density="comfortable"
+              query={search.harnesses ?? ""}
+              onQueryChange={(q) => setPageQuery("harnesses", q)}
               onSetConcurrency={setHarnessConcurrency}
             />
           ) : route.name === "repos" ? (
@@ -217,6 +235,8 @@ export function App() {
               snapshot={snapshot}
               density="comfortable"
               repoFilter={repoFilter}
+              query={search.repos ?? ""}
+              onQueryChange={(q) => setPageQuery("repos", q)}
               onSetRepoFilter={setRepoFilter}
             />
           ) : route.name === "routing" ? (
@@ -255,7 +275,6 @@ export function App() {
 function mergeOverrides(
   snap: Snapshot,
   overrides: Record<string, IssueOverride>,
-  harnessOverrides: Record<string, number>,
 ): Snapshot {
   const apply = (i: Issue): Issue => {
     const o = overrides[i.id];
@@ -269,14 +288,8 @@ function mergeOverrides(
   // Drop ignored items entirely from any list — they shouldn't appear anywhere.
   const isIgnored = (id: string) => overrides[id]?.ignored === true;
 
-  const harnesses: Harness[] | undefined = snap.harnesses?.map((h) => ({
-    ...h,
-    concurrency: harnessOverrides[h.id] ?? h.concurrency,
-  }));
-
   return {
     ...snap,
-    harnesses,
     running: snap.running.filter((r) => !isIgnored(r.issue.id)).map((r) => ({ ...r, issue: apply(r.issue) })),
     kanban: {
       ...snap.kanban,
@@ -496,7 +509,8 @@ function Sidebar({
   const inboxCount = snapshot ? inboxIssues(snapshot).length : 0;
   const liveCount = snapshot?.running.length ?? 0;
   const harnesses = snapshot?.harnesses ?? [];
-  const repos = snapshot?.repos_detail ?? null;
+  // Sidebar badge shows the count of *connected* repos, not all available.
+  const connectedCount = snapshot?.available_repos?.filter((r) => r.connected).length ?? null;
 
   type NavItem = {
     id: Route["name"];
@@ -515,7 +529,7 @@ function Sidebar({
     { id: "harnesses", label: "Harnesses", icon: IconTeam, badge: harnesses.length || null },
   ];
   const sources: NavItem[] = [
-    { id: "repos", label: "Repos", icon: IconRepos, badge: repos ? repos.length : null },
+    { id: "repos", label: "Repos", icon: IconRepos, badge: connectedCount ?? null },
     { id: "routing", label: "Routing", icon: IconWorkflow },
   ];
 
@@ -755,7 +769,35 @@ function CommandPalette({
     });
   }
 
-  const all = [...navCmds, ...issueCmds];
+  // Repos: jump to the Repos page scoped to the picked repo. Connected ones
+  // first so they're easier to reach when typing.
+  const repoCmds: Cmd[] = [];
+  const sortedRepos = [...(snapshot.available_repos ?? [])].sort(
+    (a, b) => Number(b.connected) - Number(a.connected),
+  );
+  for (const r of sortedRepos) {
+    repoCmds.push({
+      id: "repo-" + r.slug,
+      label: r.slug + (r.connected ? "" : "  · not connected"),
+      kind: "Repo",
+      icon: IconRepos,
+      run: () => setRoute({ name: "repos" }),
+    });
+  }
+
+  // Harnesses: jump to the Harnesses page; useful for tweaking concurrency.
+  const harnessCmds: Cmd[] = [];
+  for (const h of snapshot.harnesses ?? []) {
+    harnessCmds.push({
+      id: "harness-" + h.id,
+      label: `${h.name}${h.version ? ` · v${h.version}` : ""}${h.available ? "" : " · offline"}`,
+      kind: "Harness",
+      icon: IconTeam,
+      run: () => setRoute({ name: "harnesses" }),
+    });
+  }
+
+  const all = [...navCmds, ...issueCmds, ...repoCmds, ...harnessCmds];
   const filtered = q ? all.filter((c) => c.label.toLowerCase().includes(q.toLowerCase())) : all.slice(0, 12);
 
   useEffect(() => { setSel(0); }, [q]);

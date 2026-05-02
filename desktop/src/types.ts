@@ -3,7 +3,9 @@ export type HarnessId =
   | "claude-code"
   | "gemini"
   | "pi-mono"
-  | "opencode";
+  | "opencode"
+  | "cursor-agent"
+  | "github-copilot";
 
 export type TaskType = "issue" | "pr";
 
@@ -22,12 +24,29 @@ export interface Harness {
   last_seen_at?: string | null;
 }
 
+/// One GitHub repo discovered via `gh repo list` and persisted in sqlite.
+/// `connected = true` means the orchestrator dispatches against this repo.
 export interface Repo {
   slug: string;
-  open_issues: number;
-  in_flight: number;
-  errored: number;
-  last_synced_at: string | null;
+  description?: string | null;
+  url?: string | null;
+  default_branch?: string | null;
+  primary_language?: string | null;
+  is_private: boolean;
+  is_archived: boolean;
+  updated_at?: string | null;
+  connected: boolean;
+  connected_at?: string | null;
+  last_synced_at?: string | null;
+}
+
+/// Health of the gh-CLI integration. Lets the UI distinguish "user has
+/// zero repos" from "gh isn't installed" from "gh isn't authenticated".
+export interface RepoStatus {
+  gh_available: boolean;
+  gh_authenticated: boolean;
+  error?: string | null;
+  last_refreshed_at?: string | null;
 }
 
 export interface Issue {
@@ -112,10 +131,14 @@ export interface Snapshot {
   poll_interval_ms: number;
   max_concurrent_agents: number;
   kanban: KanbanBoard;
+  /// Slugs of connected repos (subset of `available_repos` with connected=true).
+  /// Drives the repo filter dropdown and dispatch gate.
   repos: string[];
+  /// Full repo rows from sqlite (joined with gh metadata + connected flag).
+  available_repos?: Repo[];
+  repo_status?: RepoStatus;
   paused: boolean;
   harnesses?: Harness[];
-  repos_detail?: Repo[];
   inbox?: Issue[];
 }
 

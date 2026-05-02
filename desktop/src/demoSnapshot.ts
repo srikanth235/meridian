@@ -171,10 +171,16 @@ export function makeDemoSnapshot(): Snapshot {
       ],
       unsorted: [],
     },
-    repos: DUMMY_REPOS.map((r) => r.slug),
+    repos: DUMMY_REPOS.filter((r) => r.connected).map((r) => r.slug),
+    available_repos: DUMMY_REPOS,
+    repo_status: {
+      gh_available: true,
+      gh_authenticated: true,
+      error: null,
+      last_refreshed_at: new Date().toISOString(),
+    },
     paused: false,
     harnesses: [],
-    repos_detail: DUMMY_REPOS,
     inbox: [inb1, inb2, inb3, inb4, inb5],
   };
 }

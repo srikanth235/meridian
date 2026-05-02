@@ -1,6 +1,9 @@
 // Meridian atoms — small visual primitives shared across screens.
+import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import type { Harness, HarnessId } from "./types";
+import { HARNESS_LOGOS } from "./harnessLogos";
+import { IconSearch } from "./icons";
 
 export type SymStatus = "running" | "queued" | "review" | "failed" | "merged";
 
@@ -254,6 +257,7 @@ export function HarnessAvatar({
       </span>
     );
   }
+  const logo = HARNESS_LOGOS[harness.id];
   const initials = harness.name
     .split(/[\s-]+/)
     .map((p) => p[0])
@@ -274,7 +278,22 @@ export function HarnessAvatar({
         opacity: harness.available ? 1 : 0.5,
       }}
     >
-      {initials}
+      {logo ? (
+        <svg
+          width={Math.round(size * 0.58)}
+          height={Math.round(size * 0.58)}
+          viewBox={logo.viewBox}
+          fill="currentColor"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden
+        >
+          {logo.paths.map((d, i) => (
+            <path key={i} d={d} />
+          ))}
+        </svg>
+      ) : (
+        initials
+      )}
     </span>
   );
 }
@@ -285,6 +304,81 @@ export function harnessById(
 ): Harness | undefined {
   if (!id || !harnesses) return undefined;
   return harnesses.find((h) => h.id === id);
+}
+
+/// Reusable in-page search input. Linear-style:
+///   - Sized to fit alongside a page header
+///   - `/` from anywhere on the page focuses it (handled by App's global key)
+///   - Esc clears + blurs
+///   - Shows a × clear button when non-empty
+/// The component itself only manages focus + Esc; the parent owns the value.
+export function PageSearch({
+  value,
+  onChange,
+  placeholder = "Search…",
+  pageId,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  /// Used by the global `/` handler to find the active page's input.
+  pageId: string;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // `/` focus from anywhere on the page (Linear-style). Skip when the user
+      // is already typing in another input/textarea.
+      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+      if ((e.target as HTMLElement | null)?.isContentEditable) return;
+      e.preventDefault();
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  return (
+    <div
+      className="inline-flex items-center gap-2 rounded-md border border-border bg-panel2"
+      style={{ paddingLeft: 8, paddingRight: 6, height: 28, minWidth: 220 }}
+      data-page-search={pageId}
+    >
+      <span className="text-textMute"><IconSearch size={12} /></span>
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            if (value) {
+              onChange("");
+            } else {
+              inputRef.current?.blur();
+            }
+          }
+        }}
+        placeholder={placeholder}
+        className="flex-1 bg-transparent border-0 outline-0 text-text text-[12px] min-w-0"
+      />
+      {value ? (
+        <button
+          type="button"
+          onClick={() => { onChange(""); inputRef.current?.focus(); }}
+          title="Clear"
+          aria-label="Clear search"
+          className="text-textMute hover:text-text cursor-pointer"
+          style={{ background: "transparent", border: 0, padding: 2, lineHeight: 0 }}
+        >
+          ×
+        </button>
+      ) : (
+        <Kbd>/</Kbd>
+      )}
+    </div>
+  );
 }
 
 export function RepoChip({ repo }: { repo?: string | null }) {

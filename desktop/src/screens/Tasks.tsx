@@ -3,6 +3,7 @@ import type { Harness, HarnessId, Issue, Snapshot, TaskStatus, TaskType } from "
 import {
   Card,
   HarnessAvatar,
+  PageSearch,
   Pill,
   RepoChip,
   TabPill,
@@ -15,6 +16,7 @@ import {
   taskStatusOf,
   triagedIssues,
 } from "../symphonyMap";
+import { issueMatches } from "../search";
 import { AssignMenu } from "./AssignMenu";
 
 type AssigneeFilter = HarnessId | "all" | "unassigned";
@@ -25,12 +27,16 @@ export function Tasks({
   density,
   onOpenIssue,
   repoFilter,
+  query,
+  onQueryChange,
   onAssign,
 }: {
   snapshot: Snapshot;
   density: "comfortable" | "dense";
   onOpenIssue: (id: string) => void;
   repoFilter: string | null;
+  query: string;
+  onQueryChange: (q: string) => void;
   onAssign: (issueId: string, harness: HarnessId | null) => void;
 }) {
   const harnesses = snapshot.harnesses ?? [];
@@ -45,9 +51,10 @@ export function Tasks({
       if (type !== "all" && (i.type ?? "issue") !== type) return false;
       if (assignee === "unassigned" && i.assignee) return false;
       if (assignee !== "all" && assignee !== "unassigned" && i.assignee !== assignee) return false;
+      if (!issueMatches(i, query)) return false;
       return true;
     });
-  }, [all, repoFilter, type, assignee]);
+  }, [all, repoFilter, type, assignee, query]);
 
   const runningIds = useMemo(
     () => new Set(snapshot.running.map((r) => r.issue.id)),
@@ -78,6 +85,12 @@ export function Tasks({
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          <PageSearch
+            pageId="tasks"
+            value={query}
+            onChange={onQueryChange}
+            placeholder="Search tasks…"
+          />
           <Filters
             label="Type"
             options={[
