@@ -24,7 +24,7 @@ struct Cli {
     #[arg(long, env = "MERIDIAN_HOST", default_value = "127.0.0.1")]
     host: String,
 
-    /// Static frontend asset directory (defaults to ./frontend/dist if present).
+    /// Static renderer asset directory (defaults to ./desktop/dist-renderer if present).
     #[arg(long, env = "MERIDIAN_STATIC_DIR")]
     static_dir: Option<PathBuf>,
 }
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
     let port = cli.port.unwrap_or(initial.config.server.port);
     let addr: SocketAddr = format!("{}:{}", cli.host, port).parse()?;
     let static_dir = cli.static_dir.or_else(|| {
-        let p = PathBuf::from("frontend/dist");
+        let p = PathBuf::from("desktop/dist-renderer");
         p.is_dir().then_some(p)
     });
 
