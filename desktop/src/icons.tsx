@@ -1,4 +1,4 @@
-// SVG icons matched to Symphony design language (lucide-style strokes).
+// SVG icons matched to Meridian design language (lucide-style strokes).
 import type { SVGProps } from "react";
 
 type IconProps = { size?: number } & SVGProps<SVGSVGElement>;
@@ -127,6 +127,21 @@ export function IconChevronLeft({ size = 14, ...rest }: IconProps) {
   return (
     <svg {...base(size)} {...rest}>
       <path d="m15 6-6 6 6 6" />
+    </svg>
+  );
+}
+export function IconSun({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+    </svg>
+  );
+}
+export function IconMoon({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   );
 }

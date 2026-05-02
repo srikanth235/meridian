@@ -81,7 +81,7 @@ export function Workflows({ density }: { snapshot: Snapshot; density: "comfortab
                   <span
                     key={s + i}
                     className="font-mono text-[10.5px] text-textDim px-1.5 py-0.5 rounded"
-                    style={{ background: "#1c1c1c", border: "1px solid #1a1a1a" }}
+                    style={{ background: "var(--panel3)", border: "1px solid var(--borderS)" }}
                   >
                     {s}
                   </span>
@@ -128,7 +128,7 @@ export function Activity({ snapshot, density }: { snapshot: Snapshot; density: "
             <div
               key={i}
               className="flex items-start gap-3 px-4 py-2.5 text-[12.5px]"
-              style={{ borderTop: i === 0 ? "none" : "1px solid #1a1a1a" }}
+              style={{ borderTop: i === 0 ? "none" : "1px solid var(--borderS)" }}
             >
               <span className="w-1.5 h-1.5 rounded-full mt-2 shrink-0" style={{ background: kindColor(a.kind) }} />
               <span className="font-mono text-[11px] text-textDim shrink-0" style={{ width: 88 }}>

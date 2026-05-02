@@ -78,7 +78,7 @@ function AgentRow({ a, first, onClick }: { a: SymAgent; first: boolean; onClick:
         display: "grid",
         alignItems: "center",
         padding: "12px 16px",
-        borderTop: first ? "none" : "1px solid #1a1a1a",
+        borderTop: first ? "none" : "1px solid var(--borderS)",
       }}
     >
       <span style={{ display: "flex", alignItems: "center" }}>

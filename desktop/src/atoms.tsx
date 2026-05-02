@@ -1,4 +1,4 @@
-// Symphony atoms — small visual primitives shared across screens.
+// Meridian atoms — small visual primitives shared across screens.
 import type { ReactNode } from "react";
 
 export type SymStatus = "running" | "queued" | "review" | "failed" | "merged";
@@ -61,9 +61,9 @@ export function Kbd({ children }: { children: ReactNode }) {
         minWidth: 18,
         height: 18,
         padding: "0 5px",
-        background: "#1c1c1c",
-        color: "#9a9a9a",
-        border: "1px solid #222222",
+        background: "var(--panel3)",
+        color: "var(--textDim)",
+        border: "1px solid var(--border)",
         borderRadius: 4,
         fontSize: 10,
         fontWeight: 500,
@@ -119,7 +119,7 @@ export function Progress({
   h?: number;
 }) {
   return (
-    <div style={{ width: "100%", height: h, background: "#1a1a1a", borderRadius: 999, overflow: "hidden" }}>
+    <div style={{ width: "100%", height: h, background: "var(--borderS)", borderRadius: 999, overflow: "hidden" }}>
       <div
         style={{
           width: `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`,
@@ -173,8 +173,8 @@ export function PrimaryBtn({
       className="h-7 inline-flex items-center gap-1.5 rounded-md text-[12px] font-medium whitespace-nowrap shrink-0"
       style={{
         padding: icon ? "0 12px 0 9px" : "0 12px",
-        background: "#ededed",
-        color: "#0a0a0a",
+        background: "var(--text)",
+        color: "var(--bg)",
         border: 0,
         cursor: "pointer",
       }}
@@ -219,7 +219,7 @@ export function TabPill({
     <button
       onClick={onClick}
       className="h-[22px] px-2.5 rounded-md text-[11px] font-medium border-0 cursor-pointer"
-      style={{ background: active ? "#1c1c1c" : "transparent", color: active ? "#ededed" : "#9a9a9a" }}
+      style={{ background: active ? "var(--panel3)" : "transparent", color: active ? "var(--text)" : "var(--textDim)" }}
     >
       {children}
     </button>

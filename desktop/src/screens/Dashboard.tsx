@@ -75,8 +75,8 @@ export function Dashboard({
           display: "grid",
           gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
           gap: 1,
-          background: "#222222",
-          border: "1px solid #222222",
+          background: "var(--border)",
+          border: "1px solid var(--border)",
           borderRadius: 8,
           overflow: "hidden",
         }}
@@ -149,8 +149,8 @@ export function Dashboard({
               display: "grid",
               gridTemplateColumns: "repeat(3, 1fr)",
               gap: 1,
-              background: "#222222",
-              borderTop: "1px solid #222222",
+              background: "var(--border)",
+              borderTop: "1px solid var(--border)",
             }}
           >
             {DUMMY_WORKERS.map((w) => (
@@ -166,7 +166,7 @@ export function Dashboard({
               <div
                 key={w.id}
                 className="flex items-center justify-between px-3.5 py-2.5"
-                style={{ borderTop: i === 0 ? "none" : "1px solid #1a1a1a" }}
+                style={{ borderTop: i === 0 ? "none" : "1px solid var(--borderS)" }}
               >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <div className="w-6 h-6 rounded-md bg-panel3 flex items-center justify-center text-textDim shrink-0">
@@ -234,7 +234,7 @@ function LiveAgentRow({ a, first, onClick }: { a: SymAgent; first: boolean; onCl
         display: "grid",
         alignItems: "center",
         padding: "12px 16px",
-        borderTop: first ? "none" : "1px solid #1a1a1a",
+        borderTop: first ? "none" : "1px solid var(--borderS)",
       }}
     >
       <span style={{ display: "flex", alignItems: "center" }}>

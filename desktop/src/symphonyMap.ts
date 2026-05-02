@@ -1,4 +1,4 @@
-// Map raw snapshot data → the shape Symphony screens expect.
+// Map raw snapshot data → the shape Meridian screens expect.
 // Where the orchestrator doesn't yet expose a field (worker assignment, workflow,
 // progress %), we derive a sensible value so the UI stays meaningful.
 

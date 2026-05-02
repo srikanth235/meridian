@@ -81,8 +81,8 @@ export function IssueDetail({
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-            background: "#222222",
-            border: "1px solid #222222",
+            background: "var(--border)",
+            border: "1px solid var(--border)",
             borderRadius: 8,
             overflow: "hidden",
           }}
