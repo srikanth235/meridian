@@ -38,15 +38,14 @@ crates/
   meridian-orchestrator # Poll loop, dispatch, retry, reconciliation, snapshot
   meridian-server       # axum HTTP/WS API + static asset serving
   meridian              # Binary
-frontend/               # React + Vite + Tailwind kanban UI
-desktop/                # Electron shell (spawns daemon, hosts UI in a window)
+desktop/                # Electron shell + React/Vite/Tailwind renderer (Symphony UI)
 WORKFLOW.md             # Repository-owned workflow contract (example)
 ```
 
 ## Prerequisites
 
 - Rust (stable)
-- Node 20+ (for the frontend and the Electron shell)
+- Node 20+ (for the Electron shell + React renderer)
 - [`gh` CLI](https://cli.github.com) authenticated (`gh auth login`) with `repo` scope
 - `codex` (Codex CLI with `app-server` subcommand) on PATH, signed in to ChatGPT
 
@@ -68,10 +67,10 @@ gh label create "status:in-review" --color 0e8a16
 
 ```bash
 cargo build --release
-cd frontend && npm install && npm run build
+cd desktop && npm install && npm run build:renderer
 ```
 
-The release binary serves `frontend/dist/` as the kanban UI when present.
+The release binary serves `desktop/dist-renderer/` as the UI when present.
 
 ### 3. Run
 
@@ -89,8 +88,7 @@ BrowserWindow at it.
 
 ```bash
 cargo build --release
-cd frontend && npm install && npm run build
-cd ../desktop && npm install
+cd desktop && npm install && npm run build:renderer
 npm start                 # dev — uses ./target/release/meridian + ./WORKFLOW.md
 npm run build:mac         # produces a .app under desktop/dist/
 ```
@@ -112,7 +110,7 @@ For hot-reload UI work, run backend and Vite separately:
 cargo run -p meridian
 
 # terminal 2 — Vite dev server proxies /api → 127.0.0.1:7878
-cd frontend && npm run dev
+cd desktop && npm run dev
 ```
 
 ## Configuration

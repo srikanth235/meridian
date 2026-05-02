@@ -48,7 +48,7 @@ pub async fn serve(
 
     if let Some(dir) = static_dir {
         if dir.is_dir() {
-            info!(path = %dir.display(), "serving static frontend assets");
+            info!(path = %dir.display(), "serving static renderer assets");
             app = app.fallback_service(ServeDir::new(dir));
         } else {
             warn!(path = %dir.display(), "static dir not found; UI disabled");

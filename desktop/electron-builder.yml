@@ -13,8 +13,8 @@ extraResources:
   # ~/Library/Application Support/Meridian.
   - from: "../target/release/meridian"
     to: "bin/meridian"
-  - from: "../frontend/dist"
-    to: "frontend"
+  - from: "./dist-renderer"
+    to: "renderer"
   - from: "../WORKFLOW.md"
     to: "WORKFLOW.md"
 mac:

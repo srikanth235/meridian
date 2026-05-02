@@ -56,9 +56,10 @@ function resolveStaticDir() {
     return process.env.MERIDIAN_STATIC_DIR;
   }
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'frontend');
+    return path.join(process.resourcesPath, 'renderer');
   }
-  return path.join(REPO_ROOT, 'frontend', 'dist');
+  // Dev: Vite builds the renderer into desktop/dist-renderer/.
+  return path.join(__dirname, 'dist-renderer');
 }
 
 function resolveWorkflowPath() {
