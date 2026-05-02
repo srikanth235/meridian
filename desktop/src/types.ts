@@ -1,3 +1,35 @@
+export type HarnessId =
+  | "codex"
+  | "claude-code"
+  | "gemini"
+  | "pi-mono"
+  | "opencode";
+
+export type TaskType = "issue" | "pr";
+
+export type TaskStatus = "todo" | "in_progress" | "in_review" | "done";
+
+export interface Harness {
+  id: HarnessId;
+  name: string;
+  binary: string;
+  color: string;
+  concurrency: number;
+  in_flight: number;
+  capabilities?: string[];
+  available: boolean;
+  version?: string | null;
+  last_seen_at?: string | null;
+}
+
+export interface Repo {
+  slug: string;
+  open_issues: number;
+  in_flight: number;
+  errored: number;
+  last_synced_at: string | null;
+}
+
 export interface Issue {
   id: string;
   identifier: string;
@@ -12,6 +44,9 @@ export interface Issue {
   created_at?: string | null;
   updated_at?: string | null;
   repo?: string | null;
+  type?: TaskType;
+  assignee?: HarnessId | null;
+  triaged?: boolean;
 }
 
 export interface RunningRow {
@@ -26,6 +61,7 @@ export interface RunningRow {
   tokens_output: number;
   tokens_total: number;
   last_message_tail: string | null;
+  harness?: HarnessId | null;
 }
 
 export interface RetryRow {
@@ -78,6 +114,9 @@ export interface Snapshot {
   kanban: KanbanBoard;
   repos: string[];
   paused: boolean;
+  harnesses?: Harness[];
+  repos_detail?: Repo[];
+  inbox?: Issue[];
 }
 
 export interface WorkflowResponse {
