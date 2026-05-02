@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import type { Snapshot } from "./types";
+import { isDemoMode, makeDemoSnapshot } from "./demoSnapshot";
 
 type ConnState = "connecting" | "open" | "closed";
 
 export function useSnapshot(): { snapshot: Snapshot | null; conn: ConnState } {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [conn, setConn] = useState<ConnState>("connecting");
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(
+    isDemoMode() ? makeDemoSnapshot() : null
+  );
+  const [conn, setConn] = useState<ConnState>(isDemoMode() ? "open" : "connecting");
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
+    if (isDemoMode()) return; // skip WS in demo mode
     let cancelled = false;
     let retry = 0;
 
