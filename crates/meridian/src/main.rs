@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use meridian_config::{load_workflow, WorkflowWatcher};
 use meridian_orchestrator::Orchestrator;
-use meridian_tracker::{GithubTracker, Tracker};
+use meridian_tracker::{GithubTracker, SqliteTracker, Tracker};
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -49,7 +49,15 @@ async fn main() -> Result<()> {
     // Keep watcher alive for the whole process.
     Box::leak(Box::new(watcher));
 
-    let tracker: Arc<dyn Tracker> = Arc::new(GithubTracker::from_config(&initial.config.tracker)?);
+    let tracker: Arc<dyn Tracker> = match initial.config.tracker.kind.to_lowercase().as_str() {
+        "github" => Arc::new(GithubTracker::from_config(&initial.config.tracker)?),
+        "sqlite" => {
+            let db_path = initial.config.effective_db_path();
+            info!(path = %db_path.display(), "opening sqlite store");
+            Arc::new(SqliteTracker::open(&db_path).await?)
+        }
+        other => anyhow::bail!("unsupported tracker.kind: {other}"),
+    };
 
     let orch = Orchestrator::new(tracker, workflow.clone());
     let handle = orch.handle();

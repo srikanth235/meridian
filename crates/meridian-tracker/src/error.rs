@@ -16,4 +16,8 @@ pub enum TrackerError {
     GhExit { code: i32, stderr: String },
     #[error("`gh` returned bad output: {0}")]
     GhBadOutput(String),
+    #[error("tracker.db_path is required for kind \"sqlite\"")]
+    MissingDbPath,
+    #[error(transparent)]
+    Store(#[from] meridian_store::StoreError),
 }
