@@ -16,10 +16,13 @@ use tracing::{debug, info, warn};
 
 use std::collections::VecDeque;
 
+use crate::harnesses::{detect_harnesses, Harness};
 use crate::snapshot::{
     KanbanBoard, KanbanColumn, RetryRow, RunningRow, SessionLog, SessionLogEntry, Snapshot,
     TotalsRow,
 };
+
+const HARNESS_REFRESH_SECS: u64 = 60;
 
 const SESSION_LOG_CAP: usize = 500;
 const SESSION_LOG_TTL_SECS: i64 = 30 * 60;
@@ -81,6 +84,9 @@ struct OrchestratorInner {
     /// Runtime pause override; takes precedence over `agent.paused` from
     /// WORKFLOW.md until cleared (or process restart).
     pause_override: Mutex<Option<bool>>,
+    /// Last detected coding-harness availability (codex, claude, gemini, …).
+    /// Populated by a background refresh task started from `Orchestrator::run`.
+    harness_cache: Mutex<Vec<Harness>>,
 }
 
 impl Orchestrator {
@@ -106,6 +112,7 @@ impl Orchestrator {
             board: Mutex::new(KanbanBoard::default()),
             session_logs: Mutex::new(HashMap::new()),
             pause_override: Mutex::new(None),
+            harness_cache: Mutex::new(Vec::new()),
         });
         Self { inner }
     }
@@ -119,6 +126,7 @@ impl Orchestrator {
     /// Run forever: startup cleanup, then the poll loop.
     pub async fn run(self) {
         let inner = self.inner.clone();
+        inner.spawn_harness_refresh();
         inner.startup_cleanup().await;
         loop {
             OrchestratorInner::tick(&inner).await;
@@ -131,6 +139,21 @@ impl Orchestrator {
 impl OrchestratorInner {
     fn current_config(&self) -> ServiceConfig {
         self.workflow.current().config
+    }
+
+    /// Background task: probe `$PATH` for known coding harnesses and cache the
+    /// result. Re-runs every `HARNESS_REFRESH_SECS` so the UI picks up newly
+    /// installed/uninstalled CLIs without a restart.
+    fn spawn_harness_refresh(self: &Arc<Self>) {
+        let inner = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let detected = detect_harnesses().await;
+                *inner.harness_cache.lock() = detected;
+                let _ = inner.events.send(SnapshotEvent::StateChanged);
+                tokio::time::sleep(Duration::from_secs(HARNESS_REFRESH_SECS)).await;
+            }
+        });
     }
 
     /// Effective paused state: runtime override wins, else `agent.paused` from
@@ -852,6 +875,7 @@ impl OrchestratorInner {
         let kanban = self.board.lock().clone();
         let repos = self.workflow.current().config.tracker.repos.clone();
         let paused = self.effective_paused();
+        let harnesses = self.harness_cache.lock().clone();
         Snapshot {
             running,
             retrying,
@@ -863,6 +887,7 @@ impl OrchestratorInner {
             kanban,
             repos,
             paused,
+            harnesses,
         }
     }
 }

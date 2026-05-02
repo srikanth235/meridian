@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use meridian_core::Issue;
 
+use crate::harnesses::Harness;
+
 /// Snapshot returned by the runtime monitoring API (spec §13.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -24,6 +26,10 @@ pub struct Snapshot {
     /// True when the orchestrator is currently skipping new dispatches.
     #[serde(default)]
     pub paused: bool,
+    /// Coding harnesses detected on the host (codex, claude, gemini, …).
+    /// Refreshed on a background tick by the orchestrator.
+    #[serde(default)]
+    pub harnesses: Vec<Harness>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

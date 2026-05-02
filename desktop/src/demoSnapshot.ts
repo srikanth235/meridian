@@ -2,7 +2,7 @@
 // the orchestrator daemon. Activated by appending `?demo=1` to the URL.
 
 import type { HarnessId, Issue, Snapshot } from "./types";
-import { DUMMY_HARNESSES, DUMMY_REPOS } from "./dummyData";
+import { DUMMY_REPOS } from "./dummyData";
 
 function isoMinutesAgo(m: number): string {
   return new Date(Date.now() - m * 60 * 1000).toISOString();
@@ -173,7 +173,7 @@ export function makeDemoSnapshot(): Snapshot {
     },
     repos: DUMMY_REPOS.map((r) => r.slug),
     paused: false,
-    harnesses: DUMMY_HARNESSES,
+    harnesses: [],
     repos_detail: DUMMY_REPOS,
     inbox: [inb1, inb2, inb3, inb4, inb5],
   };
