@@ -1,0 +1,21 @@
+[package]
+name = "meridian-automations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meridian-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+parking_lot.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["full"] }
+notify.workspace = true
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+regex.workspace = true

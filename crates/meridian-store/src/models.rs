@@ -402,6 +402,59 @@ pub struct HarnessRecord {
     pub last_seen_at: Option<DateTime<Utc>>,
 }
 
+/// One automation script discovered under `<workflow_dir>/automations/`.
+/// `schedule_json` is the raw JSON-encoded `Schedule` ({"cron":"..."} or
+/// {"every":"1h"|"6h"|"1d"}); the runtime parses it lazily. `running_since`
+/// is set on dispatch and cleared on completion to prevent double-fire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationRecord {
+    pub id: String,
+    pub file_path: String,
+    pub name: String,
+    pub schedule_json: String,
+    pub enabled: bool,
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub running_since: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub source_hash: Option<String>,
+    pub failure_count: i64,
+    pub parse_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One execution record for an automation, persisted on dispatch and updated
+/// to terminal status on completion. `log` is the captured stdout tail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationRunRecord {
+    pub id: i64,
+    pub automation_id: String,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub status: String,
+    pub dry_run: bool,
+    pub error: Option<String>,
+    pub log: Option<String>,
+}
+
+/// Custom inbox entry (NL automation request, automation error, generic note).
+/// Distinct from issues — surfaces in the same Inbox UI but isn't backed by
+/// a tracker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxEntryRecord {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub url: Option<String>,
+    pub tags: Vec<String>,
+    pub source: Option<String>,
+    pub dedup_key: Option<String>,
+    pub dismissed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// One GitHub repo discoverable via `gh repo list`. `connected` is the user
 /// toggle that gates whether the orchestrator dispatches against this repo;
 /// it's preserved across refreshes (we never clobber it from `gh` data).

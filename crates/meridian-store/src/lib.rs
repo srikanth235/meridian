@@ -21,9 +21,9 @@ pub mod store;
 
 pub use error::StoreError;
 pub use models::{
-    Attachment, Comment, Cycle, HarnessRecord, IssueRecord, IssueRelation, IssueRelationType,
-    Label, LiveSessionRecord, NewIssue, Project, ProjectState, RepoRecord, RetryEntryRecord,
-    RunAttemptRecord, RunAttemptStatus, SessionEventRecord, Team, User, Workspace, WorkflowState,
-    WorkflowStateType,
+    Attachment, AutomationRecord, AutomationRunRecord, Comment, Cycle, HarnessRecord,
+    InboxEntryRecord, IssueRecord, IssueRelation, IssueRelationType, Label, LiveSessionRecord,
+    NewIssue, Project, ProjectState, RepoRecord, RetryEntryRecord, RunAttemptRecord,
+    RunAttemptStatus, SessionEventRecord, Team, User, Workspace, WorkflowState, WorkflowStateType,
 };
 pub use store::Store;

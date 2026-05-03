@@ -3,11 +3,12 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, State,
     },
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use meridian_automations::{AutomationsHandle, SdkRequest};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -26,6 +27,7 @@ struct AppState {
     orch: OrchestratorHandle,
     workflow: ReloadHandle,
     user_cache: Arc<Mutex<Option<(Instant, serde_json::Value)>>>,
+    automations: Option<AutomationsHandle>,
 }
 
 pub async fn serve(
@@ -33,11 +35,13 @@ pub async fn serve(
     orch: OrchestratorHandle,
     workflow: ReloadHandle,
     static_dir: Option<PathBuf>,
+    automations: Option<AutomationsHandle>,
 ) -> std::io::Result<()> {
     let state = AppState {
         orch,
         workflow,
         user_cache: Arc::new(Mutex::new(None)),
+        automations,
     };
 
     let api = Router::new()
@@ -53,6 +57,20 @@ pub async fn serve(
         .route("/repos/refresh", post(post_refresh_repos))
         .route("/repos/connect", post(post_set_repo_connected))
         .route("/repos/add", post(post_add_repo))
+        .route("/automations", get(get_automations))
+        .route("/automations/runtime", get(get_automations_runtime))
+        .route("/automations/request", post(post_automation_request))
+        .route("/automations/:id", get(get_automation))
+        .route("/automations/:id/runs", get(get_automation_runs))
+        .route("/automations/:id/enable", post(post_automation_enable))
+        .route("/automations/:id/run", post(post_automation_run))
+        .route("/automations/sdk/github/issues", post(post_sdk_github_issues))
+        .route("/automations/sdk/github/prs", post(post_sdk_github_prs))
+        .route("/automations/sdk/inbox/create", post(post_sdk_inbox_create))
+        .route("/automations/sdk/tabs/open", post(post_sdk_tabs_open))
+        .route("/inbox", get(get_inbox))
+        .route("/inbox/:id", get(get_inbox_one))
+        .route("/inbox/:id/dismiss", post(post_inbox_dismiss))
         .route("/ws", get(ws_upgrade));
 
     let mut app = Router::new()
@@ -274,6 +292,333 @@ async fn ws_loop(mut socket: WebSocket, state: AppState) {
                 }
             }
         }
+    }
+}
+
+// ============================================================================
+// Automations endpoints
+// ============================================================================
+
+fn auto(state: &AppState) -> Result<&AutomationsHandle, (StatusCode, Json<serde_json::Value>)> {
+    state
+        .automations
+        .as_ref()
+        .ok_or_else(|| (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "automations subsystem not initialized"})),
+        ))
+}
+
+async fn get_automations(State(s): State<AppState>) -> impl IntoResponse {
+    match auto(&s) {
+        Err(r) => return r.into_response(),
+        Ok(h) => {
+            let rows = h.list().await;
+            (StatusCode::OK, Json(serde_json::json!({"automations": rows}))).into_response()
+        }
+    }
+}
+
+async fn get_automations_runtime(State(s): State<AppState>) -> impl IntoResponse {
+    match auto(&s) {
+        Err(r) => r.into_response(),
+        Ok(h) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"runtime": h.runtime()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_automation(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(h) = auto(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "automations not ready"})),
+        )
+            .into_response();
+    };
+    let Some(row) = h.get(&id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response();
+    };
+    let source = h.read_source(&id).await;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"automation": row, "source": source})),
+    )
+        .into_response()
+}
+
+async fn get_automation_runs(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(h) = auto(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "automations not ready"})),
+        )
+            .into_response();
+    };
+    let runs = h.list_runs(&id, 50).await;
+    (StatusCode::OK, Json(serde_json::json!({"runs": runs}))).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct AutomationEnableBody {
+    enabled: bool,
+}
+
+async fn post_automation_enable(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AutomationEnableBody>,
+) -> impl IntoResponse {
+    let Ok(h) = auto(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "automations not ready"})),
+        )
+            .into_response();
+    };
+    match h.set_enabled(&id, body.enabled).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct AutomationRunBody {
+    #[serde(default)]
+    dry_run: bool,
+}
+
+async fn post_automation_run(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AutomationRunBody>,
+) -> impl IntoResponse {
+    let Ok(h) = auto(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "automations not ready"})),
+        )
+            .into_response();
+    };
+    match h.run_now(&id, body.dry_run).await {
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct AutomationRequestBody {
+    nl: String,
+}
+
+async fn post_automation_request(
+    State(s): State<AppState>,
+    Json(body): Json<AutomationRequestBody>,
+) -> impl IntoResponse {
+    let Ok(h) = auto(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "automations not ready"})),
+        )
+            .into_response();
+    };
+    let nl = body.nl.trim();
+    if nl.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "nl is empty"})),
+        )
+            .into_response();
+    }
+    match h.submit_request(nl).await {
+        Ok((id, spec)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "inbox_entry_id": id,
+                "slug": spec.slug,
+                "title": spec.title,
+                "body": spec.body,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+// SDK surface — token-gated. Each handler validates the per-run token, then
+// forwards to the surface that actually performs the side effect (or dry-run
+// no-op).
+
+async fn sdk_dispatch(
+    state: &AppState,
+    headers: &HeaderMap,
+    req: SdkRequest,
+) -> impl IntoResponse {
+    let Ok(h) = auto(state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "automations not ready"})),
+        )
+            .into_response();
+    };
+    let Some(token) = headers
+        .get("x-automation-token")
+        .and_then(|v| v.to_str().ok())
+    else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "missing x-automation-token"})),
+        )
+            .into_response();
+    };
+    let Some(ctx) = h.tokens().lookup(token) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid token"})),
+        )
+            .into_response();
+    };
+    match h.handle_sdk(&ctx, req).await {
+        Ok(meridian_automations::SdkResponse::Items(items)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"items": items})),
+        )
+            .into_response(),
+        Ok(meridian_automations::SdkResponse::Ok(v)) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SdkGithubBody {
+    filter: meridian_automations::sdk::IssueFilter,
+}
+
+async fn post_sdk_github_issues(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SdkGithubBody>,
+) -> impl IntoResponse {
+    sdk_dispatch(&s, &headers, SdkRequest::GithubIssues { filter: body.filter }).await
+}
+
+async fn post_sdk_github_prs(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SdkGithubBody>,
+) -> impl IntoResponse {
+    sdk_dispatch(&s, &headers, SdkRequest::GithubPrs { filter: body.filter }).await
+}
+
+#[derive(serde::Deserialize)]
+struct SdkInboxBody {
+    entry: meridian_automations::sdk::InboxCreate,
+}
+
+async fn post_sdk_inbox_create(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SdkInboxBody>,
+) -> impl IntoResponse {
+    sdk_dispatch(&s, &headers, SdkRequest::InboxCreate { entry: body.entry }).await
+}
+
+#[derive(serde::Deserialize)]
+struct SdkTabsBody {
+    tab: meridian_automations::sdk::TabsOpen,
+}
+
+async fn post_sdk_tabs_open(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SdkTabsBody>,
+) -> impl IntoResponse {
+    sdk_dispatch(&s, &headers, SdkRequest::TabsOpen { tab: body.tab }).await
+}
+
+// ============================================================================
+// Custom inbox endpoints (automation requests / errors / tab-opens)
+// ============================================================================
+
+async fn get_inbox(State(s): State<AppState>) -> impl IntoResponse {
+    let Ok(h) = auto(&s) else {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"entries": [] })),
+        )
+            .into_response();
+    };
+    let entries = h.list_inbox().await;
+    (StatusCode::OK, Json(serde_json::json!({"entries": entries}))).into_response()
+}
+
+async fn get_inbox_one(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(h) = auto(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "automations not ready"})),
+        )
+            .into_response();
+    };
+    match h.get_inbox(&id).await {
+        Some(entry) => (StatusCode::OK, Json(serde_json::json!({"entry": entry}))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response(),
+    }
+}
+
+async fn post_inbox_dismiss(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(h) = auto(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "automations not ready"})),
+        )
+            .into_response();
+    };
+    match h.dismiss_inbox(&id).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
     }
 }
 

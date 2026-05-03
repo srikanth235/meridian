@@ -8,13 +8,14 @@ use rusqlite::Connection;
 use crate::error::StoreError;
 
 /// Bumped whenever a migration is appended below.
-pub const CURRENT_VERSION: u32 = 3;
+pub const CURRENT_VERSION: u32 = 4;
 
 /// All migrations, in order. Append-only.
 pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, MIGRATION_001_INITIAL),
     (2, MIGRATION_002_ISSUE_KIND),
     (3, MIGRATION_003_HARNESS_AND_REPO),
+    (4, MIGRATION_004_AUTOMATIONS),
 ];
 
 pub fn apply_all(conn: &mut Connection) -> Result<(), StoreError> {
@@ -395,4 +396,66 @@ CREATE TABLE repo (
     last_synced_at    TEXT
 );
 CREATE INDEX idx_repo_connected ON repo(connected);
+"#;
+
+/// Automations: filesystem-watched scripts under `<workflow_dir>/automations/`.
+/// `automation` rows track loaded scripts; `automation_run` is the run
+/// history; `automation_seen_key` deduplicates SDK side-effects per
+/// automation. `inbox_entry` holds custom inbox surface area used by
+/// automations (NL request specs, error surfacing) — distinct from issues.
+const MIGRATION_004_AUTOMATIONS: &str = r#"
+CREATE TABLE automation (
+    id             TEXT PRIMARY KEY,
+    file_path      TEXT NOT NULL UNIQUE,
+    name           TEXT NOT NULL,
+    schedule_json  TEXT NOT NULL,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    last_run_at    TEXT,
+    next_run_at    TEXT,
+    running_since  TEXT,
+    last_error     TEXT,
+    source_hash    TEXT,
+    failure_count  INTEGER NOT NULL DEFAULT 0,
+    parse_error    TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX idx_automation_next ON automation(next_run_at);
+
+CREATE TABLE automation_run (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    automation_id  TEXT NOT NULL REFERENCES automation(id) ON DELETE CASCADE,
+    started_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    ended_at       TEXT,
+    status         TEXT NOT NULL CHECK (status IN ('running','succeeded','failed')),
+    dry_run        INTEGER NOT NULL DEFAULT 0,
+    error          TEXT,
+    log            TEXT
+);
+CREATE INDEX idx_automation_run_aid ON automation_run(automation_id, started_at DESC);
+
+CREATE TABLE automation_seen_key (
+    automation_id  TEXT NOT NULL REFERENCES automation(id) ON DELETE CASCADE,
+    dedup_key      TEXT NOT NULL,
+    seen_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (automation_id, dedup_key)
+);
+CREATE INDEX idx_automation_seen_key_seen_at ON automation_seen_key(seen_at);
+
+CREATE TABLE inbox_entry (
+    id            TEXT PRIMARY KEY,
+    kind          TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    body          TEXT,
+    url           TEXT,
+    tags_json     TEXT,
+    source        TEXT,
+    dedup_key     TEXT,
+    dismissed_at  TEXT,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX idx_inbox_entry_kind    ON inbox_entry(kind, created_at DESC);
+CREATE UNIQUE INDEX idx_inbox_entry_dedup
+    ON inbox_entry(source, dedup_key)
+    WHERE source IS NOT NULL AND dedup_key IS NOT NULL;
 "#;

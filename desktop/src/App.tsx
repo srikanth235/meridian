@@ -4,6 +4,7 @@ import type { HarnessId, Issue, Snapshot } from "./types";
 import { Kbd } from "./atoms";
 import {
   IconActivity,
+  IconAutomation,
   IconBranch,
   IconChevronDown,
   IconInbox,
@@ -27,6 +28,7 @@ import { Live } from "./screens/Live";
 import { Harnesses } from "./screens/Harnesses";
 import { Repos } from "./screens/Repos";
 import { Routing } from "./screens/Routing";
+import { Automations } from "./screens/Automations";
 import { ActivityPanel } from "./screens/ActivityPanel";
 import { IssueDetail } from "./screens/IssueDetail";
 import { inboxIssues } from "./symphonyMap";
@@ -35,6 +37,7 @@ type Route =
   | { name: "inbox" }
   | { name: "tasks" }
   | { name: "live" }
+  | { name: "automations" }
   | { name: "harnesses" }
   | { name: "repos" }
   | { name: "routing" }
@@ -249,6 +252,12 @@ export function App() {
               repoFilter={repoFilter}
               query={search.live ?? ""}
               onQueryChange={(q) => setPageQuery("live", q)}
+            />
+          ) : route.name === "automations" ? (
+            <Automations
+              density="comfortable"
+              query={search.automations ?? ""}
+              onQueryChange={(q) => setPageQuery("automations", q)}
             />
           ) : route.name === "harnesses" ? (
             <Harnesses
@@ -557,6 +566,7 @@ function Sidebar({
     { id: "inbox", label: "Inbox", icon: IconInbox, badge: inboxCount > 0 ? inboxCount : null },
     { id: "tasks", label: "Tasks", icon: IconTasks, matchAlso: ["issue"] },
     { id: "live", label: "Live", icon: IconLive, badge: liveCount > 0 ? liveCount : null },
+    { id: "automations", label: "Automations", icon: IconAutomation },
   ];
   const team: NavItem[] = [
     { id: "harnesses", label: "Harnesses", icon: IconTeam, badge: harnesses.length || null },
@@ -766,6 +776,7 @@ function CommandPalette({
     { id: "go-inbox",     label: "Go to Inbox",     kind: "Navigate", icon: IconInbox,    run: () => setRoute({ name: "inbox" }) },
     { id: "go-tasks",     label: "Go to Tasks",     kind: "Navigate", icon: IconTasks,    run: () => setRoute({ name: "tasks" }) },
     { id: "go-live",      label: "Go to Live",      kind: "Navigate", icon: IconLive,     run: () => setRoute({ name: "live" }) },
+    { id: "go-automations", label: "Go to Automations", kind: "Navigate", icon: IconAutomation, run: () => setRoute({ name: "automations" }) },
     { id: "go-harnesses", label: "Go to Harnesses", kind: "Navigate", icon: IconTeam,     run: () => setRoute({ name: "harnesses" }) },
     { id: "go-repos",     label: "Go to Repos",     kind: "Navigate", icon: IconRepos,    run: () => setRoute({ name: "repos" }) },
     { id: "go-routing",   label: "Go to Routing",   kind: "Navigate", icon: IconWorkflow, run: () => setRoute({ name: "routing" }) },

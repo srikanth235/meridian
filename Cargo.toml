@@ -9,6 +9,7 @@ members = [
     "crates/meridian-agent",
     "crates/meridian-orchestrator",
     "crates/meridian-server",
+    "crates/meridian-automations",
     "crates/meridian",
 ]
 
@@ -54,6 +55,7 @@ meridian-tracker = { path = "crates/meridian-tracker" }
 meridian-agent = { path = "crates/meridian-agent" }
 meridian-orchestrator = { path = "crates/meridian-orchestrator" }
 meridian-server = { path = "crates/meridian-server" }
+meridian-automations = { path = "crates/meridian-automations" }
 
 [profile.release]
 opt-level = 3

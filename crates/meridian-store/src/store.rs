@@ -14,10 +14,10 @@ use uuid::Uuid;
 
 use crate::error::StoreError;
 use crate::models::{
-    Attachment, BlockerRef, Comment, Cycle, HarnessRecord, IssueRecord, IssueRelation,
-    IssueRelationType, Label, LiveSessionRecord, NewIssue, Project, ProjectState, RepoRecord,
-    RetryEntryRecord, RunAttemptRecord, RunAttemptStatus, SessionEventRecord, Team, User,
-    Workspace, WorkflowState, WorkflowStateType,
+    Attachment, AutomationRecord, AutomationRunRecord, BlockerRef, Comment, Cycle, HarnessRecord,
+    InboxEntryRecord, IssueRecord, IssueRelation, IssueRelationType, Label, LiveSessionRecord,
+    NewIssue, Project, ProjectState, RepoRecord, RetryEntryRecord, RunAttemptRecord,
+    RunAttemptStatus, SessionEventRecord, Team, User, Workspace, WorkflowState, WorkflowStateType,
 };
 use crate::schema;
 
@@ -1009,6 +1009,483 @@ impl Store {
                     if connected { Some(Utc::now()) } else { None },
                 ],
             )?;
+            Ok(())
+        })
+        .await
+    }
+
+    // -------------------- Automations --------------------
+
+    /// Insert (or update by file_path) an automation row freshly parsed from
+    /// disk. Preserves user-edited fields like `enabled`, `last_run_at`,
+    /// `running_since`. `next_run_at` is recomputed only on first insert.
+    pub async fn upsert_automation(
+        &self,
+        id: &str,
+        file_path: &str,
+        name: &str,
+        schedule_json: &str,
+        source_hash: Option<&str>,
+        parse_error: Option<&str>,
+        initial_next_run_at: Option<DateTime<Utc>>,
+    ) -> Result<(), StoreError> {
+        let id = id.to_string();
+        let file_path = file_path.to_string();
+        let name = name.to_string();
+        let schedule_json = schedule_json.to_string();
+        let source_hash = source_hash.map(|s| s.to_string());
+        let parse_error = parse_error.map(|s| s.to_string());
+        self.run(move |conn| {
+            conn.execute(
+                "INSERT INTO automation (id, file_path, name, schedule_json,
+                                         source_hash, parse_error, next_run_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                    file_path     = excluded.file_path,
+                    name          = excluded.name,
+                    schedule_json = excluded.schedule_json,
+                    source_hash   = excluded.source_hash,
+                    parse_error   = excluded.parse_error,
+                    updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+                rusqlite::params![
+                    id,
+                    file_path,
+                    name,
+                    schedule_json,
+                    source_hash,
+                    parse_error,
+                    initial_next_run_at,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn list_automations(&self) -> Result<Vec<AutomationRecord>, StoreError> {
+        self.run(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, file_path, name, schedule_json, enabled, last_run_at,
+                        next_run_at, running_since, last_error, source_hash,
+                        failure_count, parse_error, created_at, updated_at
+                 FROM automation ORDER BY name",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(AutomationRecord {
+                        id: row.get(0)?,
+                        file_path: row.get(1)?,
+                        name: row.get(2)?,
+                        schedule_json: row.get(3)?,
+                        enabled: row.get::<_, i64>(4)? != 0,
+                        last_run_at: row.get(5)?,
+                        next_run_at: row.get(6)?,
+                        running_since: row.get(7)?,
+                        last_error: row.get(8)?,
+                        source_hash: row.get(9)?,
+                        failure_count: row.get(10)?,
+                        parse_error: row.get(11)?,
+                        created_at: row.get(12)?,
+                        updated_at: row.get(13)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn get_automation(
+        &self,
+        id: &str,
+    ) -> Result<Option<AutomationRecord>, StoreError> {
+        let id = id.to_string();
+        self.run(move |conn| {
+            let row = conn
+                .query_row(
+                    "SELECT id, file_path, name, schedule_json, enabled, last_run_at,
+                            next_run_at, running_since, last_error, source_hash,
+                            failure_count, parse_error, created_at, updated_at
+                     FROM automation WHERE id = ?1",
+                    [id],
+                    |row| {
+                        Ok(AutomationRecord {
+                            id: row.get(0)?,
+                            file_path: row.get(1)?,
+                            name: row.get(2)?,
+                            schedule_json: row.get(3)?,
+                            enabled: row.get::<_, i64>(4)? != 0,
+                            last_run_at: row.get(5)?,
+                            next_run_at: row.get(6)?,
+                            running_since: row.get(7)?,
+                            last_error: row.get(8)?,
+                            source_hash: row.get(9)?,
+                            failure_count: row.get(10)?,
+                            parse_error: row.get(11)?,
+                            created_at: row.get(12)?,
+                            updated_at: row.get(13)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+        .await
+    }
+
+    pub async fn set_automation_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> Result<(), StoreError> {
+        let id = id.to_string();
+        self.run(move |conn| {
+            let n = conn.execute(
+                "UPDATE automation
+                 SET enabled = ?2,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 WHERE id = ?1",
+                rusqlite::params![id, enabled as i64],
+            )?;
+            if n == 0 {
+                return Err(StoreError::NotFound(format!("automation {id}")));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Atomically claim an automation for execution: sets `running_since` only
+    /// if it's currently NULL. Returns true if claim succeeded.
+    pub async fn claim_automation(
+        &self,
+        id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, StoreError> {
+        let id = id.to_string();
+        self.run(move |conn| {
+            let n = conn.execute(
+                "UPDATE automation SET running_since = ?2
+                 WHERE id = ?1 AND running_since IS NULL",
+                rusqlite::params![id, now],
+            )?;
+            Ok(n > 0)
+        })
+        .await
+    }
+
+    pub async fn release_automation(
+        &self,
+        id: &str,
+        success: bool,
+        new_last_run_at: Option<DateTime<Utc>>,
+        new_next_run_at: Option<DateTime<Utc>>,
+        last_error: Option<&str>,
+        failure_count: i64,
+    ) -> Result<(), StoreError> {
+        let id = id.to_string();
+        let last_error = last_error.map(|s| s.to_string());
+        self.run(move |conn| {
+            if success {
+                conn.execute(
+                    "UPDATE automation
+                     SET running_since = NULL,
+                         last_run_at   = ?2,
+                         next_run_at   = ?3,
+                         last_error    = NULL,
+                         failure_count = 0,
+                         updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                     WHERE id = ?1",
+                    rusqlite::params![id, new_last_run_at, new_next_run_at],
+                )?;
+            } else {
+                conn.execute(
+                    "UPDATE automation
+                     SET running_since = NULL,
+                         next_run_at   = ?2,
+                         last_error    = ?3,
+                         failure_count = ?4,
+                         updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                     WHERE id = ?1",
+                    rusqlite::params![id, new_next_run_at, last_error, failure_count],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Clear any orphaned `running_since` flags at startup — these would
+    /// otherwise block automations forever after a daemon crash mid-run.
+    pub async fn clear_running_automations(&self) -> Result<(), StoreError> {
+        self.run(|conn| {
+            conn.execute(
+                "UPDATE automation SET running_since = NULL WHERE running_since IS NOT NULL",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn delete_automation(&self, id: &str) -> Result<(), StoreError> {
+        let id = id.to_string();
+        self.run(move |conn| {
+            conn.execute("DELETE FROM automation WHERE id = ?1", [id])?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn insert_automation_run(
+        &self,
+        automation_id: &str,
+        dry_run: bool,
+        started_at: DateTime<Utc>,
+    ) -> Result<i64, StoreError> {
+        let automation_id = automation_id.to_string();
+        self.run(move |conn| {
+            conn.execute(
+                "INSERT INTO automation_run (automation_id, started_at, status, dry_run)
+                 VALUES (?1, ?2, 'running', ?3)",
+                rusqlite::params![automation_id, started_at, dry_run as i64],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await
+    }
+
+    pub async fn finish_automation_run(
+        &self,
+        run_id: i64,
+        ended_at: DateTime<Utc>,
+        success: bool,
+        error: Option<&str>,
+        log: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let error = error.map(|s| s.to_string());
+        let log = log.map(|s| s.to_string());
+        self.run(move |conn| {
+            conn.execute(
+                "UPDATE automation_run
+                 SET ended_at = ?2,
+                     status   = ?3,
+                     error    = ?4,
+                     log      = ?5
+                 WHERE id = ?1",
+                rusqlite::params![
+                    run_id,
+                    ended_at,
+                    if success { "succeeded" } else { "failed" },
+                    error,
+                    log,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn list_automation_runs(
+        &self,
+        automation_id: &str,
+        limit: i64,
+    ) -> Result<Vec<AutomationRunRecord>, StoreError> {
+        let automation_id = automation_id.to_string();
+        self.run(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, automation_id, started_at, ended_at, status, dry_run, error, log
+                 FROM automation_run
+                 WHERE automation_id = ?1
+                 ORDER BY started_at DESC
+                 LIMIT ?2",
+            )?;
+            let rows = stmt
+                .query_map(rusqlite::params![automation_id, limit], |row| {
+                    Ok(AutomationRunRecord {
+                        id: row.get(0)?,
+                        automation_id: row.get(1)?,
+                        started_at: row.get(2)?,
+                        ended_at: row.get(3)?,
+                        status: row.get(4)?,
+                        dry_run: row.get::<_, i64>(5)? != 0,
+                        error: row.get(6)?,
+                        log: row.get(7)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Returns true if the (automation_id, dedup_key) was newly inserted (i.e.
+    /// the side effect should proceed). False means the key was already seen.
+    pub async fn check_and_mark_seen(
+        &self,
+        automation_id: &str,
+        dedup_key: &str,
+    ) -> Result<bool, StoreError> {
+        let automation_id = automation_id.to_string();
+        let dedup_key = dedup_key.to_string();
+        self.run(move |conn| {
+            let n = conn.execute(
+                "INSERT OR IGNORE INTO automation_seen_key (automation_id, dedup_key)
+                 VALUES (?1, ?2)",
+                rusqlite::params![automation_id, dedup_key],
+            )?;
+            Ok(n > 0)
+        })
+        .await
+    }
+
+    /// Drop dedup keys older than `cutoff` to bound table growth (90d default).
+    pub async fn prune_seen_keys(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<usize, StoreError> {
+        self.run(move |conn| {
+            let n = conn.execute(
+                "DELETE FROM automation_seen_key WHERE seen_at < ?1",
+                rusqlite::params![cutoff],
+            )?;
+            Ok(n)
+        })
+        .await
+    }
+
+    // -------------------- Inbox entries (custom) --------------------
+
+    /// Insert a custom inbox entry. Returns the entry id. If `(source,
+    /// dedup_key)` already exists, returns the existing row's id.
+    pub async fn insert_inbox_entry(
+        &self,
+        kind: &str,
+        title: &str,
+        body: Option<&str>,
+        url: Option<&str>,
+        tags: &[String],
+        source: Option<&str>,
+        dedup_key: Option<&str>,
+    ) -> Result<String, StoreError> {
+        let kind = kind.to_string();
+        let title = title.to_string();
+        let body = body.map(|s| s.to_string());
+        let url = url.map(|s| s.to_string());
+        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
+        let source = source.map(|s| s.to_string());
+        let dedup_key = dedup_key.map(|s| s.to_string());
+        self.run(move |conn| {
+            // Dedup check first (when both source + dedup_key set).
+            if let (Some(src), Some(dk)) = (&source, &dedup_key) {
+                let existing: Option<String> = conn
+                    .query_row(
+                        "SELECT id FROM inbox_entry WHERE source = ?1 AND dedup_key = ?2",
+                        rusqlite::params![src, dk],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(id) = existing {
+                    return Ok(id);
+                }
+            }
+            let id = new_id();
+            conn.execute(
+                "INSERT INTO inbox_entry (id, kind, title, body, url, tags_json, source, dedup_key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![id, kind, title, body, url, tags_json, source, dedup_key],
+            )?;
+            Ok(id)
+        })
+        .await
+    }
+
+    pub async fn list_inbox_entries(
+        &self,
+        include_dismissed: bool,
+    ) -> Result<Vec<InboxEntryRecord>, StoreError> {
+        self.run(move |conn| {
+            let sql = if include_dismissed {
+                "SELECT id, kind, title, body, url, tags_json, source, dedup_key,
+                        dismissed_at, created_at
+                 FROM inbox_entry ORDER BY created_at DESC"
+            } else {
+                "SELECT id, kind, title, body, url, tags_json, source, dedup_key,
+                        dismissed_at, created_at
+                 FROM inbox_entry WHERE dismissed_at IS NULL ORDER BY created_at DESC"
+            };
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let tags_json: String = row.get(5)?;
+                    let tags: Vec<String> =
+                        serde_json::from_str(&tags_json).unwrap_or_default();
+                    Ok(InboxEntryRecord {
+                        id: row.get(0)?,
+                        kind: row.get(1)?,
+                        title: row.get(2)?,
+                        body: row.get(3)?,
+                        url: row.get(4)?,
+                        tags,
+                        source: row.get(6)?,
+                        dedup_key: row.get(7)?,
+                        dismissed_at: row.get(8)?,
+                        created_at: row.get(9)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn get_inbox_entry(
+        &self,
+        id: &str,
+    ) -> Result<Option<InboxEntryRecord>, StoreError> {
+        let id = id.to_string();
+        self.run(move |conn| {
+            let row = conn
+                .query_row(
+                    "SELECT id, kind, title, body, url, tags_json, source, dedup_key,
+                            dismissed_at, created_at
+                     FROM inbox_entry WHERE id = ?1",
+                    [id],
+                    |row| {
+                        let tags_json: String = row.get(5)?;
+                        let tags: Vec<String> =
+                            serde_json::from_str(&tags_json).unwrap_or_default();
+                        Ok(InboxEntryRecord {
+                            id: row.get(0)?,
+                            kind: row.get(1)?,
+                            title: row.get(2)?,
+                            body: row.get(3)?,
+                            url: row.get(4)?,
+                            tags,
+                            source: row.get(6)?,
+                            dedup_key: row.get(7)?,
+                            dismissed_at: row.get(8)?,
+                            created_at: row.get(9)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+        .await
+    }
+
+    pub async fn dismiss_inbox_entry(&self, id: &str) -> Result<(), StoreError> {
+        let id = id.to_string();
+        self.run(move |conn| {
+            let n = conn.execute(
+                "UPDATE inbox_entry SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 WHERE id = ?1 AND dismissed_at IS NULL",
+                [id],
+            )?;
+            if n == 0 {
+                return Err(StoreError::NotFound("inbox_entry".into()));
+            }
             Ok(())
         })
         .await

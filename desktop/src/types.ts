@@ -147,3 +147,60 @@ export interface WorkflowResponse {
   config: Record<string, unknown>;
   prompt_template: string;
 }
+
+// ---------------- Automations ----------------
+
+export type AutomationSchedule =
+  | { cron: string }
+  | { every: "1h" | "6h" | "1d" };
+
+export interface Automation {
+  id: string;
+  file_path: string;
+  name: string;
+  schedule_json: string;
+  enabled: boolean;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  running_since: string | null;
+  last_error: string | null;
+  source_hash: string | null;
+  failure_count: number;
+  parse_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutomationRun {
+  id: number;
+  automation_id: string;
+  started_at: string;
+  ended_at: string | null;
+  status: "running" | "succeeded" | "failed";
+  dry_run: boolean;
+  error: string | null;
+  log: string | null;
+}
+
+export interface AutomationsRuntime {
+  command: string;
+  kind: "bun" | "node" | "unknown";
+  version: string;
+  supports_ts: boolean;
+  source: string;
+  missing: boolean;
+  hint?: string | null;
+}
+
+export interface InboxEntry {
+  id: string;
+  kind: string;
+  title: string;
+  body: string | null;
+  url: string | null;
+  tags: string[];
+  source: string | null;
+  dedup_key: string | null;
+  dismissed_at: string | null;
+  created_at: string;
+}

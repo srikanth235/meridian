@@ -8,3 +8,13 @@ dist/
 .env.local
 frontend/dist/
 crates/symphony-server/static/
+# Automations runtime: SDK + runner are installed by the daemon at startup
+# from embedded assets. User scripts under `automations/` should be checked
+# in case-by-case (not auto-ignored).
+/automations/.runtime/
+/automations/node_modules/
+/automations/package.json
+# The SDK source bundled into the daemon binary lives under a node_modules/
+# layout so the runner can `import "@symphony/automation"` directly. Keep it
+# tracked despite the global node_modules/ ignore above.
+!crates/meridian-automations/runtime-assets/node_modules/

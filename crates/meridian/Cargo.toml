@@ -14,6 +14,7 @@ meridian-tracker.workspace = true
 meridian-store.workspace = true
 meridian-orchestrator.workspace = true
 meridian-server.workspace = true
+meridian-automations.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

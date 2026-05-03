@@ -74,10 +74,41 @@ async fn main() -> Result<()> {
         p.is_dir().then_some(p)
     });
 
+    // Start the automations subsystem (filesystem-watched scripts +
+    // scheduler). Lives next to WORKFLOW.md as `automations/`. If startup
+    // fails (Node missing, dir unwriteable) we surface a warning but keep the
+    // daemon running — automations are optional.
+    let automations_dir = wf_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.join("automations"))
+        .unwrap_or_else(|| PathBuf::from("automations"));
+    let sdk_base = format!("http://127.0.0.1:{}/api/automations/sdk", port);
+    let automations = match meridian_automations::AutomationsService::start(
+        automations_dir.clone(),
+        sdk_base,
+        store.clone(),
+    )
+    .await
+    {
+        Ok(h) => {
+            info!(path = %automations_dir.display(), "automations subsystem started");
+            Some(h)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to start automations subsystem; feature disabled");
+            None
+        }
+    };
+
     let server_handle = handle.clone();
     let server_workflow = workflow.clone();
+    let server_auto = automations.clone();
     tokio::spawn(async move {
-        if let Err(e) = meridian_server::serve(addr, server_handle, server_workflow, static_dir).await {
+        if let Err(e) =
+            meridian_server::serve(addr, server_handle, server_workflow, static_dir, server_auto)
+                .await
+        {
             tracing::error!(error = %e, "http server crashed");
         }
     });
