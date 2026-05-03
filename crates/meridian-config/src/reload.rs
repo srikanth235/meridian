@@ -62,7 +62,12 @@ impl WorkflowWatcher {
         .map_err(io_err)?;
 
         // Watch the parent so renames over the file (editors often do this) still trigger.
-        let watch_target = path.parent().unwrap_or_else(|| Path::new("."));
+        // `Path::new("WORKFLOW.md").parent()` returns `Some("")`, not `None`, so we
+        // also have to filter out the empty path before falling back to `.`.
+        let watch_target = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         watcher
             .watch(watch_target, RecursiveMode::NonRecursive)
             .map_err(io_err)?;
