@@ -10,17 +10,22 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use meridian_config::ReloadHandle;
 use meridian_orchestrator::OrchestratorHandle;
+use tokio::sync::Mutex;
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use tracing::{info, warn};
+
+const USER_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone)]
 struct AppState {
     orch: OrchestratorHandle,
     workflow: ReloadHandle,
+    user_cache: Arc<Mutex<Option<(Instant, serde_json::Value)>>>,
 }
 
 pub async fn serve(
@@ -29,11 +34,16 @@ pub async fn serve(
     workflow: ReloadHandle,
     static_dir: Option<PathBuf>,
 ) -> std::io::Result<()> {
-    let state = AppState { orch, workflow };
+    let state = AppState {
+        orch,
+        workflow,
+        user_cache: Arc::new(Mutex::new(None)),
+    };
 
     let api = Router::new()
         .route("/snapshot", get(get_snapshot))
         .route("/workflow", get(get_workflow))
+        .route("/user", get(get_user))
         .route("/health", get(get_health))
         .route("/sessions/:issue_id/log", get(get_session_log))
         .route("/control/pause", post(post_pause))
@@ -77,6 +87,59 @@ async fn get_workflow(State(s): State<AppState>) -> Json<serde_json::Value> {
         "config": wf.raw_config,
         "prompt_template": wf.prompt_template,
     }))
+}
+
+async fn get_user(State(s): State<AppState>) -> impl IntoResponse {
+    use tokio::process::Command;
+    use tokio::time::timeout;
+
+    {
+        let cache = s.user_cache.lock().await;
+        if let Some((fetched_at, value)) = cache.as_ref() {
+            if fetched_at.elapsed() < USER_CACHE_TTL {
+                return (StatusCode::OK, Json(value.clone()));
+            }
+        }
+    }
+
+    let mut cmd = Command::new("gh");
+    cmd.args(["api", "user", "--jq", "{login: .login, name: .name, avatar_url: .avatar_url}"])
+        .env("PATH", meridian_orchestrator::harnesses::augmented_path_env())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = match timeout(Duration::from_secs(5), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": format!("gh not invokable: {e}")})),
+            )
+        }
+        Err(_) => {
+            return (
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(serde_json::json!({"error": "gh api user timed out"})),
+            )
+        }
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": stderr})),
+        );
+    }
+    match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+        Ok(v) => {
+            *s.user_cache.lock().await = Some((Instant::now(), v.clone()));
+            (StatusCode::OK, Json(v))
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("malformed gh json: {e}")})),
+        ),
+    }
 }
 
 async fn get_health() -> impl IntoResponse {

@@ -53,6 +53,32 @@ interface IssueOverride {
   ignored?: boolean;
 }
 
+interface GhUser {
+  login: string;
+  name: string | null;
+  avatar_url: string | null;
+}
+
+function useGhUser(): GhUser | null {
+  const [user, setUser] = useState<GhUser | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/user")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data || typeof data.login !== "string") return;
+        setUser({
+          login: data.login,
+          name: data.name ?? null,
+          avatar_url: data.avatar_url ?? null,
+        });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  return user;
+}
+
 function applyTheme(theme: Theme) {
   const root = document.documentElement;
   if (theme === "light") root.classList.add("theme-light");
@@ -75,6 +101,7 @@ function saveJson<T>(key: string, val: T) {
 
 export function App() {
   const { snapshot: rawSnapshot, conn } = useSnapshot();
+  const ghUser = useGhUser();
   const [route, setRoute] = useState<Route>({ name: "inbox" });
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -186,6 +213,7 @@ export function App() {
           setRoute={setRoute}
           onPalette={() => setPaletteOpen(true)}
           onOpenActivity={() => setActivityOpen(true)}
+          user={ghUser}
         />
         <main className="flex-1 overflow-auto min-w-0 bg-bg">
           {!snapshot ? (
@@ -499,13 +527,18 @@ function Sidebar({
   setRoute,
   onPalette,
   onOpenActivity,
+  user,
 }: {
   snapshot: Snapshot | null;
   route: Route;
   setRoute: (r: Route) => void;
   onPalette: () => void;
   onOpenActivity: () => void;
+  user: GhUser | null;
 }) {
+  const displayName = user?.name?.trim() || user?.login || "—";
+  const handle = user?.login ? `@${user.login}` : "";
+  const initial = (user?.name?.trim() || user?.login || "?").slice(0, 1).toUpperCase();
   const inboxCount = snapshot ? inboxIssues(snapshot).length : 0;
   const liveCount = snapshot?.running.length ?? 0;
   const harnesses = snapshot?.harnesses ?? [];
@@ -623,15 +656,24 @@ function Sidebar({
         >
           <IconActivity size={12} />
         </button>
-        <div
-          className="rounded-full text-white text-[11px] font-semibold flex items-center justify-center"
-          style={{ width: 26, height: 26, background: "linear-gradient(135deg, #10b981, #3b82f6)" }}
-        >
-          S
-        </div>
+        {user?.avatar_url ? (
+          <img
+            src={user.avatar_url}
+            alt={displayName}
+            className="rounded-full"
+            style={{ width: 26, height: 26, objectFit: "cover" }}
+          />
+        ) : (
+          <div
+            className="rounded-full text-white text-[11px] font-semibold flex items-center justify-center"
+            style={{ width: 26, height: 26, background: "linear-gradient(135deg, #10b981, #3b82f6)" }}
+          >
+            {initial}
+          </div>
+        )}
         <div className="flex-1 min-w-0">
-          <div className="text-[12px] font-medium text-text">Srikanth</div>
-          <div className="text-[10.5px] text-textMute font-mono">@srikanth</div>
+          <div className="text-[12px] font-medium text-text truncate">{displayName}</div>
+          <div className="text-[10.5px] text-textMute font-mono truncate">{handle}</div>
         </div>
         <button className="bg-transparent border-0 text-textMute hover:text-textDim cursor-pointer p-1">
           <IconSettings size={14} />
