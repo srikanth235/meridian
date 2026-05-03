@@ -6,7 +6,92 @@ import type {
   InboxEntry,
 } from "../types";
 import { Card, PageSearch, Pill } from "../atoms";
-import { IconAutomation, IconPlay, IconCheck, IconX, IconRetry } from "../icons";
+import {
+  IconAutomation,
+  IconPlay,
+  IconCheck,
+  IconX,
+  IconRetry,
+  IconPullRequest,
+  IconInbox,
+  IconRepos,
+  IconBranch,
+} from "../icons";
+
+interface Preset {
+  id: string;
+  icon: React.ReactNode;
+  title: string;
+  hint: string;
+  prompt: string;
+}
+
+const GITHUB_PRESETS: Preset[] = [
+  {
+    id: "assigned-issues-morning",
+    icon: <IconInbox size={13} />,
+    title: "Morning issue digest",
+    hint: "Daily at 9am",
+    prompt:
+      "Every morning at 9am, pull all open issues assigned to me from my repos into the inbox, one entry per issue, deduped by issue URL.",
+  },
+  {
+    id: "review-requested-prs",
+    icon: <IconPullRequest size={13} />,
+    title: "PRs awaiting my review",
+    hint: "Every 30 min",
+    prompt:
+      "Every 30 minutes, find open PRs across my repos where I'm a requested reviewer and surface them as inbox entries deduped by PR URL.",
+  },
+  {
+    id: "new-prs-tabs",
+    icon: <IconBranch size={13} />,
+    title: "New PRs as tabs",
+    hint: "Every hour",
+    prompt:
+      "Every hour, find PRs opened or updated in my repos since the last run and open each as a tab deduped by PR URL.",
+  },
+  {
+    id: "urgent-bug-alerts",
+    icon: <IconRepos size={13} />,
+    title: "Urgent bug alerts",
+    hint: "Every 15 min",
+    prompt:
+      "Every 15 minutes, scan my repos for open issues labeled 'urgent' or 'sev1' and create an inbox entry for each, deduped by issue URL.",
+  },
+  {
+    id: "stale-prs",
+    icon: <IconPullRequest size={13} />,
+    title: "Stale PR sweep",
+    hint: "Daily at 8am",
+    prompt:
+      "Every weekday at 8am, list open PRs in my repos that have not been updated in 7+ days and add them to the inbox tagged 'stale'.",
+  },
+  {
+    id: "shipped-this-day",
+    icon: <IconCheck size={13} />,
+    title: "Shipped today",
+    hint: "Every 2 hours",
+    prompt:
+      "Every 2 hours, find PRs in my repos merged since the last run and add an inbox entry per PR tagged 'shipped', deduped by PR URL.",
+  },
+  {
+    id: "mentions-watch",
+    icon: <IconInbox size={13} />,
+    title: "Mentions watcher",
+    hint: "Every hour",
+    prompt:
+      "Every hour, find issues and PRs in my repos that mention me and were updated since the last run, and add each to the inbox deduped by URL.",
+  },
+  {
+    id: "new-issues-triage",
+    icon: <IconRepos size={13} />,
+    title: "Triage queue",
+    hint: "Every hour",
+    prompt:
+      "Every hour, find newly opened issues in my repos that have no labels yet and surface them in the inbox tagged 'triage', deduped by issue URL.",
+  },
+];
 
 interface Props {
   density: "comfortable" | "dense";
@@ -138,6 +223,16 @@ export function Automations({ density, query, onQueryChange }: Props) {
         onSubmit={submitRequest}
         submitting={submitting}
         message={submitMsg}
+      />
+
+      <PresetsCard
+        onPick={(prompt) => {
+          setNl(prompt);
+          setSubmitMsg(null);
+          if (typeof window !== "undefined") {
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }
+        }}
       />
 
       {requests.length > 0 && (
@@ -349,6 +444,56 @@ function NlComposer({
             {submitting ? "Drafting…" : "Draft request"}
           </button>
         </div>
+      </div>
+    </Card>
+  );
+}
+
+function PresetsCard({ onPick }: { onPick: (prompt: string) => void }) {
+  return (
+    <Card>
+      <SectionHeader
+        title="GitHub presets"
+        sub="Click to load the prompt above. Edit if you want, then draft."
+      />
+      <div
+        style={{
+          padding: 12,
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+          gap: 8,
+        }}
+      >
+        {GITHUB_PRESETS.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => onPick(p.prompt)}
+            className="text-left bg-panel2 border border-border rounded-md cursor-pointer hover:border-accent"
+            style={{ padding: 10 }}
+          >
+            <div className="flex items-center gap-2">
+              <span style={{ color: "var(--textDim)" }}>{p.icon}</span>
+              <span className="text-[12px] font-medium text-text truncate">
+                {p.title}
+              </span>
+              <span className="ml-auto text-[10px] text-textMute shrink-0">
+                {p.hint}
+              </span>
+            </div>
+            <div
+              className="text-[11px] text-textMute mt-1.5"
+              style={{
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+              }}
+            >
+              {p.prompt}
+            </div>
+          </button>
+        ))}
       </div>
     </Card>
   );
