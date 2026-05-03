@@ -1,36 +1,19 @@
-//! HTTP-shaped surface that the SDK shim calls into. The transport (axum
-//! routes) lives in `meridian-server`; this module owns the data model and
-//! the actual side-effect implementations so the runtime is testable without
-//! a server.
+//! Side-effect surface that the evaluator calls directly (in-process). All
+//! mutating verbs route through here so dry-run, dedup, and audit live in one
+//! place.
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
-use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use meridian_store::Store;
 
-use crate::tokens::TokenContext;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IssueFilter {
-    #[serde(default)]
-    pub assignee: Option<String>,
-    #[serde(default)]
-    pub state: Option<String>,
-    #[serde(default)]
-    pub labels: Vec<String>,
-    #[serde(default)]
-    pub repos: Vec<String>,
-    #[serde(default)]
-    pub updated_since: Option<String>,
-}
+use crate::manifest::GithubFilter;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,168 +27,139 @@ pub struct IssueRow {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct InboxCreate {
     pub title: String,
-    #[serde(default)]
     pub url: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
     pub body: Option<String>,
+    pub tags: Vec<String>,
     pub dedup_key: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct TabsOpen {
     pub url: String,
-    #[serde(default)]
     pub title: Option<String>,
     pub dedup_key: String,
 }
 
-/// Payloads accepted on the SDK HTTP surface.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SdkRequest {
-    GithubIssues { filter: IssueFilter },
-    GithubPrs { filter: IssueFilter },
-    InboxCreate { entry: InboxCreate },
-    TabsOpen { tab: TabsOpen },
+/// Identity passed into each side effect. Evaluator builds this per run.
+#[derive(Debug, Clone)]
+pub struct RunCtx {
+    pub automation_id: String,
+    pub run_id: i64,
+    pub dry_run: bool,
+    pub last_run_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub enum SdkResponse {
-    #[serde(rename = "items")]
-    Items(Vec<IssueRow>),
-    #[serde(rename = "ok")]
-    Ok(Value),
-}
-
-/// Side-effect plumbing for the SDK HTTP surface. Owns the store handle plus
-/// optional callbacks (e.g. tabs.open uses `shell.openExternal` via Electron;
-/// in headless mode it's a no-op that just records the would-open URL).
 #[derive(Clone)]
 pub struct SdkSurface {
     store: Arc<Store>,
-    log_tx: Option<mpsc::UnboundedSender<RunLog>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RunLog {
-    pub run_id: i64,
-    pub line: String,
 }
 
 impl SdkSurface {
     pub fn new(store: Arc<Store>) -> Self {
-        Self { store, log_tx: None }
+        Self { store }
     }
 
-    pub fn with_log_sink(mut self, tx: mpsc::UnboundedSender<RunLog>) -> Self {
-        self.log_tx = Some(tx);
-        self
-    }
-
-    pub async fn handle(
+    /// `github.issues` / `github.prs` source. Honors `updated_since_last_run`
+    /// by passing `ctx.last_run_at` as the GitHub `updated:>=` query filter.
+    pub async fn github_search(
         &self,
-        ctx: &TokenContext,
-        req: SdkRequest,
-    ) -> Result<SdkResponse, String> {
-        match req {
-            SdkRequest::GithubIssues { filter } => {
-                let items = gh_search(false, &filter).await?;
-                Ok(SdkResponse::Items(items))
-            }
-            SdkRequest::GithubPrs { filter } => {
-                let items = gh_search(true, &filter).await?;
-                Ok(SdkResponse::Items(items))
-            }
-            SdkRequest::InboxCreate { entry } => {
-                self.log(ctx.run_id, format!("inbox.create dedupKey={}", entry.dedup_key));
-                if ctx.dry_run {
-                    // Honor dedup state without consuming it — a dry-run
-                    // should be idempotent and shouldn't block the next real
-                    // run from acting on the same key.
-                    return Ok(SdkResponse::Ok(serde_json::json!({"wouldCreate": entry})));
-                }
-                if !self
-                    .store
-                    .check_and_mark_seen(&ctx.automation_id, &entry.dedup_key)
-                    .await
-                    .map_err(|e| e.to_string())?
-                {
-                    return Ok(SdkResponse::Ok(serde_json::json!({"deduped": true})));
-                }
-                let mut tags = entry.tags.clone();
-                if !tags.iter().any(|t| t == "automation") {
-                    tags.push("automation".into());
-                }
-                let id = self
-                    .store
-                    .insert_inbox_entry(
-                        "automation-result",
-                        &entry.title,
-                        entry.body.as_deref(),
-                        entry.url.as_deref(),
-                        &tags,
-                        Some(&format!("automation:{}", ctx.automation_id)),
-                        Some(&entry.dedup_key),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok(SdkResponse::Ok(serde_json::json!({"id": id})))
-            }
-            SdkRequest::TabsOpen { tab } => {
-                self.log(ctx.run_id, format!("tabs.open dedupKey={}", tab.dedup_key));
-                if ctx.dry_run {
-                    return Ok(SdkResponse::Ok(serde_json::json!({"wouldOpen": tab})));
-                }
-                if !self
-                    .store
-                    .check_and_mark_seen(&ctx.automation_id, &tab.dedup_key)
-                    .await
-                    .map_err(|e| e.to_string())?
-                {
-                    return Ok(SdkResponse::Ok(serde_json::json!({"deduped": true})));
-                }
-                // We don't have an in-app tab system yet — surface it as an
-                // inbox entry tagged `tab` so the user has a single place to
-                // act on automation output. The Electron shell can later
-                // intercept this and open in a real tab.
-                let title = tab.title.clone().unwrap_or_else(|| tab.url.clone());
-                let id = self
-                    .store
-                    .insert_inbox_entry(
-                        "automation-tab",
-                        &title,
-                        None,
-                        Some(&tab.url),
-                        &["automation".into(), "tab".into()],
-                        Some(&format!("automation:{}", ctx.automation_id)),
-                        Some(&tab.dedup_key),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok(SdkResponse::Ok(serde_json::json!({"id": id})))
-            }
-        }
+        prs: bool,
+        filter: &GithubFilter,
+        ctx: &RunCtx,
+    ) -> Result<Vec<IssueRow>, String> {
+        let updated_since = if filter.updated_since_last_run {
+            ctx.last_run_at.map(|d| d.to_rfc3339())
+        } else {
+            None
+        };
+        gh_search(prs, filter, updated_since.as_deref()).await
     }
 
-    fn log(&self, run_id: i64, line: String) {
-        if let Some(tx) = &self.log_tx {
-            let _ = tx.send(RunLog { run_id, line });
+    /// `inbox.create` action. Returns `Some(id)` if a new entry was inserted,
+    /// `None` if the dedup key was already seen.
+    pub async fn inbox_create(
+        &self,
+        ctx: &RunCtx,
+        entry: InboxCreate,
+    ) -> Result<Option<String>, String> {
+        if ctx.dry_run {
+            return Ok(None);
         }
+        if !self
+            .store
+            .check_and_mark_seen(&ctx.automation_id, &entry.dedup_key)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(None);
+        }
+        let mut tags = entry.tags.clone();
+        if !tags.iter().any(|t| t == "automation") {
+            tags.push("automation".into());
+        }
+        let id = self
+            .store
+            .insert_inbox_entry(
+                "automation-result",
+                &entry.title,
+                entry.body.as_deref(),
+                entry.url.as_deref(),
+                &tags,
+                Some(&format!("automation:{}", ctx.automation_id)),
+                Some(&entry.dedup_key),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Some(id))
+    }
+
+    /// `tabs.open` action. We don't have an in-app tab system yet — surface
+    /// each tab as an inbox entry tagged `tab` so the user has one place to
+    /// act on automation output.
+    pub async fn tabs_open(
+        &self,
+        ctx: &RunCtx,
+        tab: TabsOpen,
+    ) -> Result<Option<String>, String> {
+        if ctx.dry_run {
+            return Ok(None);
+        }
+        if !self
+            .store
+            .check_and_mark_seen(&ctx.automation_id, &tab.dedup_key)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(None);
+        }
+        let title = tab.title.clone().unwrap_or_else(|| tab.url.clone());
+        let id = self
+            .store
+            .insert_inbox_entry(
+                "automation-tab",
+                &title,
+                None,
+                Some(&tab.url),
+                &["automation".into(), "tab".into()],
+                Some(&format!("automation:{}", ctx.automation_id)),
+                Some(&tab.dedup_key),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Some(id))
     }
 }
 
 /// Invoke `gh search issues` / `gh search prs` against the user's
-/// authenticated CLI. We use the search endpoint rather than `gh issue list`
-/// because it natively supports cross-repo + multi-label filtering with one
-/// call.
-async fn gh_search(prs: bool, filter: &IssueFilter) -> Result<Vec<IssueRow>, String> {
+/// authenticated CLI.
+async fn gh_search(
+    prs: bool,
+    filter: &GithubFilter,
+    updated_since: Option<&str>,
+) -> Result<Vec<IssueRow>, String> {
     let mut q_parts: Vec<String> = Vec::new();
     q_parts.push(if prs { "is:pr".into() } else { "is:issue".into() });
     match filter.state.as_deref() {
@@ -215,7 +169,7 @@ async fn gh_search(prs: bool, filter: &IssueFilter) -> Result<Vec<IssueRow>, Str
         Some(other) => return Err(format!("unsupported state: {other}")),
     }
     if let Some(a) = &filter.assignee {
-        q_parts.push(format!("assignee:{}", if a == "@me" { "@me".into() } else { a.clone() }));
+        q_parts.push(format!("assignee:{a}"));
     }
     for l in &filter.labels {
         q_parts.push(format!("label:\"{}\"", l.replace('"', "")));
@@ -223,8 +177,7 @@ async fn gh_search(prs: bool, filter: &IssueFilter) -> Result<Vec<IssueRow>, Str
     for r in &filter.repos {
         q_parts.push(format!("repo:{r}"));
     }
-    if let Some(since) = &filter.updated_since {
-        // GitHub search needs YYYY-MM-DD.
+    if let Some(since) = updated_since {
         let date = since.split('T').next().unwrap_or(since);
         q_parts.push(format!("updated:>={date}"));
     }

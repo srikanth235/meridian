@@ -3,12 +3,12 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, State,
     },
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-use meridian_automations::{AutomationsHandle, SdkRequest};
+use meridian_automations::AutomationsHandle;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -58,16 +58,11 @@ pub async fn serve(
         .route("/repos/connect", post(post_set_repo_connected))
         .route("/repos/add", post(post_add_repo))
         .route("/automations", get(get_automations))
-        .route("/automations/runtime", get(get_automations_runtime))
         .route("/automations/request", post(post_automation_request))
         .route("/automations/:id", get(get_automation))
         .route("/automations/:id/runs", get(get_automation_runs))
         .route("/automations/:id/enable", post(post_automation_enable))
         .route("/automations/:id/run", post(post_automation_run))
-        .route("/automations/sdk/github/issues", post(post_sdk_github_issues))
-        .route("/automations/sdk/github/prs", post(post_sdk_github_prs))
-        .route("/automations/sdk/inbox/create", post(post_sdk_inbox_create))
-        .route("/automations/sdk/tabs/open", post(post_sdk_tabs_open))
         .route("/inbox", get(get_inbox))
         .route("/inbox/:id", get(get_inbox_one))
         .route("/inbox/:id/dismiss", post(post_inbox_dismiss))
@@ -319,17 +314,6 @@ async fn get_automations(State(s): State<AppState>) -> impl IntoResponse {
     }
 }
 
-async fn get_automations_runtime(State(s): State<AppState>) -> impl IntoResponse {
-    match auto(&s) {
-        Err(r) => r.into_response(),
-        Ok(h) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"runtime": h.runtime()})),
-        )
-            .into_response(),
-    }
-}
-
 async fn get_automation(
     State(s): State<AppState>,
     Path(id): Path<String>,
@@ -467,101 +451,6 @@ async fn post_automation_request(
         )
             .into_response(),
     }
-}
-
-// SDK surface — token-gated. Each handler validates the per-run token, then
-// forwards to the surface that actually performs the side effect (or dry-run
-// no-op).
-
-async fn sdk_dispatch(
-    state: &AppState,
-    headers: &HeaderMap,
-    req: SdkRequest,
-) -> impl IntoResponse {
-    let Ok(h) = auto(state) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "automations not ready"})),
-        )
-            .into_response();
-    };
-    let Some(token) = headers
-        .get("x-automation-token")
-        .and_then(|v| v.to_str().ok())
-    else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "missing x-automation-token"})),
-        )
-            .into_response();
-    };
-    let Some(ctx) = h.tokens().lookup(token) else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "invalid token"})),
-        )
-            .into_response();
-    };
-    match h.handle_sdk(&ctx, req).await {
-        Ok(meridian_automations::SdkResponse::Items(items)) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"items": items})),
-        )
-            .into_response(),
-        Ok(meridian_automations::SdkResponse::Ok(v)) => (StatusCode::OK, Json(v)).into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e})),
-        )
-            .into_response(),
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct SdkGithubBody {
-    filter: meridian_automations::sdk::IssueFilter,
-}
-
-async fn post_sdk_github_issues(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<SdkGithubBody>,
-) -> impl IntoResponse {
-    sdk_dispatch(&s, &headers, SdkRequest::GithubIssues { filter: body.filter }).await
-}
-
-async fn post_sdk_github_prs(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<SdkGithubBody>,
-) -> impl IntoResponse {
-    sdk_dispatch(&s, &headers, SdkRequest::GithubPrs { filter: body.filter }).await
-}
-
-#[derive(serde::Deserialize)]
-struct SdkInboxBody {
-    entry: meridian_automations::sdk::InboxCreate,
-}
-
-async fn post_sdk_inbox_create(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<SdkInboxBody>,
-) -> impl IntoResponse {
-    sdk_dispatch(&s, &headers, SdkRequest::InboxCreate { entry: body.entry }).await
-}
-
-#[derive(serde::Deserialize)]
-struct SdkTabsBody {
-    tab: meridian_automations::sdk::TabsOpen,
-}
-
-async fn post_sdk_tabs_open(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<SdkTabsBody>,
-) -> impl IntoResponse {
-    sdk_dispatch(&s, &headers, SdkRequest::TabsOpen { tab: body.tab }).await
 }
 
 // ============================================================================

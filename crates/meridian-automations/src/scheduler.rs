@@ -10,9 +10,8 @@ use tracing::{info, warn};
 use meridian_store::Store;
 
 use crate::executor::execute;
-use crate::runtime::RuntimeInfo;
 use crate::schedule::{backoff_for, Schedule};
-use crate::tokens::TokenStore;
+use crate::sdk::SdkSurface;
 
 const TICK_INTERVAL_SECS: u64 = 5;
 const SEEN_KEY_TTL_DAYS: i64 = 90;
@@ -29,15 +28,12 @@ pub enum SchedulerEvent {
 
 #[derive(Clone)]
 pub struct SchedulerConfig {
-    pub runner_path: PathBuf,
-    pub runtime: RuntimeInfo,
-    pub sdk_base: String,
+    pub surface: SdkSurface,
 }
 
 pub async fn run(
     cfg: SchedulerConfig,
     store: Arc<Store>,
-    tokens: TokenStore,
     events: broadcast::Sender<SchedulerEvent>,
 ) {
     if let Err(e) = store.clear_running_automations().await {
@@ -49,7 +45,7 @@ pub async fn run(
     prune_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        tick(&cfg, &store, &tokens, &events).await;
+        tick(&cfg, &store, &events).await;
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(TICK_INTERVAL_SECS)) => {}
             _ = prune_ticker.tick() => {
@@ -65,7 +61,6 @@ pub async fn run(
 async fn tick(
     cfg: &SchedulerConfig,
     store: &Arc<Store>,
-    tokens: &TokenStore,
     events: &broadcast::Sender<SchedulerEvent>,
 ) {
     let now = Utc::now();
@@ -93,7 +88,6 @@ async fn tick(
         if !due {
             continue;
         }
-        // Claim atomically; another tick (or manual run) may have just grabbed it.
         let claimed = match store.claim_automation(&row.id, now).await {
             Ok(b) => b,
             Err(e) => {
@@ -106,20 +100,16 @@ async fn tick(
         }
         let cfg = cfg.clone();
         let store = store.clone();
-        let tokens = tokens.clone();
         let events = events.clone();
         tokio::spawn(async move {
             let tick_started_at = Utc::now();
             let file = PathBuf::from(&row.file_path);
             let (run_id, outcome) = execute(
-                &cfg.runner_path,
                 &file,
                 &row.id,
                 row.last_run_at,
                 /* dry_run */ false,
-                &cfg.runtime,
-                &cfg.sdk_base,
-                &tokens,
+                &cfg.surface,
                 &store,
             )
             .await;
@@ -127,7 +117,6 @@ async fn tick(
                 automation_id: row.id.clone(),
                 run_id,
             });
-            // Compute the next firing window.
             let schedule: Option<Schedule> = serde_json::from_str(&row.schedule_json).ok();
             let (next_at, failure_count) = if outcome.success {
                 let next = schedule
@@ -152,8 +141,6 @@ async fn tick(
             {
                 warn!(automation = %row.id, error = %e, "release_automation failed");
             }
-            // Surface failures as inbox entries so the user sees them in
-            // their normal triage flow.
             if !outcome.success {
                 let title = format!("Automation '{}' failed", row.name);
                 let body = format!(

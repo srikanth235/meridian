@@ -1,10 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type {
-  Automation,
-  AutomationRun,
-  AutomationsRuntime,
-  InboxEntry,
-} from "../types";
+import type { Automation, AutomationRun, InboxEntry } from "../types";
 import { Card, PageSearch, Pill } from "../atoms";
 import {
   IconAutomation,
@@ -103,7 +98,6 @@ export function Automations({ density, query, onQueryChange }: Props) {
   const pad = density === "dense" ? 14 : 20;
   const [automations, setAutomations] = useState<Automation[] | null>(null);
   const [inbox, setInbox] = useState<InboxEntry[]>([]);
-  const [runtime, setRuntime] = useState<AutomationsRuntime | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [nl, setNl] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -111,14 +105,12 @@ export function Automations({ density, query, onQueryChange }: Props) {
 
   async function refresh() {
     try {
-      const [a, i, rt] = await Promise.all([
+      const [a, i] = await Promise.all([
         fetch("/api/automations").then((r) => r.json()),
         fetch("/api/inbox").then((r) => r.json()),
-        fetch("/api/automations/runtime").then((r) => r.json()),
       ]);
       setAutomations(a.automations ?? []);
       setInbox(i.entries ?? []);
-      setRuntime(rt.runtime ?? null);
     } catch {
       /* offline */
     }
@@ -215,8 +207,6 @@ export function Automations({ density, query, onQueryChange }: Props) {
         />
       </div>
 
-      <RuntimeBanner runtime={runtime} />
-
       <NlComposer
         value={nl}
         onChange={setNl}
@@ -257,8 +247,8 @@ export function Automations({ density, query, onQueryChange }: Props) {
 
       <Card>
         <SectionHeader
-          title="Scripts"
-          sub="Files in automations/. Edit the file → behavior changes."
+          title="Manifests"
+          sub="TOML files in automations/. Edit the file → behavior changes."
         />
         {filtered.length === 0 ? (
           <div className="px-4 py-12 text-center text-textMute text-[12px] flex flex-col items-center gap-3">
@@ -307,94 +297,6 @@ export function Automations({ density, query, onQueryChange }: Props) {
       )}
 
       {selected && <AutomationDetail automation={selected} />}
-    </div>
-  );
-}
-
-function RuntimeBanner({ runtime }: { runtime: AutomationsRuntime | null }) {
-  if (!runtime) return null;
-
-  const tone: "ok" | "warn" | "err" = runtime.missing
-    ? "err"
-    : runtime.hint
-      ? "warn"
-      : "ok";
-  const colors: Record<typeof tone, { bg: string; border: string; fg: string; dot: string }> = {
-    ok: {
-      bg: "rgba(16,185,129,0.06)",
-      border: "rgba(16,185,129,0.3)",
-      fg: "var(--text)",
-      dot: "var(--ok, #10b981)",
-    },
-    warn: {
-      bg: "rgba(245,158,11,0.06)",
-      border: "rgba(245,158,11,0.35)",
-      fg: "var(--text)",
-      dot: "#f59e0b",
-    },
-    err: {
-      bg: "rgba(239,68,68,0.07)",
-      border: "rgba(239,68,68,0.4)",
-      fg: "var(--text)",
-      dot: "#ef4444",
-    },
-  };
-  const c = colors[tone];
-
-  let label: string;
-  if (runtime.missing) {
-    label = "No JS runtime detected";
-  } else {
-    const kindLabel =
-      runtime.kind === "bun" ? "Bun" : runtime.kind === "node" ? "Node.js" : "Custom";
-    label = `${kindLabel} ${runtime.version || ""}`.trim();
-  }
-
-  const tsLabel = runtime.missing
-    ? "TypeScript: unavailable"
-    : runtime.supports_ts
-      ? "TypeScript: native"
-      : "TypeScript: unavailable";
-
-  return (
-    <div
-      className="flex items-center gap-3"
-      style={{
-        padding: "10px 14px",
-        background: c.bg,
-        border: `1px solid ${c.border}`,
-        borderRadius: 8,
-        color: c.fg,
-        fontSize: 12,
-      }}
-    >
-      <span
-        className="w-1.5 h-1.5 rounded-full shrink-0"
-        style={{ background: c.dot }}
-      />
-      <div className="flex-1 min-w-0">
-        <div className="font-medium">{label}</div>
-        <div className="text-textMute text-[11px] mt-0.5">
-          {tsLabel}
-          {runtime.command && (
-            <>
-              {" · "}
-              <span className="font-mono">{runtime.command}</span>
-            </>
-          )}
-          {runtime.source && runtime.source !== "missing" && (
-            <>
-              {" · source: "}
-              <span className="font-mono">{runtime.source}</span>
-            </>
-          )}
-        </div>
-        {runtime.hint && (
-          <div className="text-[11px] mt-1" style={{ color: c.dot }}>
-            {runtime.hint}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

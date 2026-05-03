@@ -182,16 +182,6 @@ export interface AutomationRun {
   log: string | null;
 }
 
-export interface AutomationsRuntime {
-  command: string;
-  kind: "bun" | "node" | "unknown";
-  version: string;
-  supports_ts: boolean;
-  source: string;
-  missing: boolean;
-  hint?: string | null;
-}
-
 export interface InboxEntry {
   id: string;
   kind: string;

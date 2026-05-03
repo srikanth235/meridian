@@ -46,6 +46,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 regex = "1.11"
 dirs = "5.0"
 rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+toml = "0.8"
 
 meridian-core = { path = "crates/meridian-core" }
 meridian-config = { path = "crates/meridian-config" }

@@ -74,19 +74,17 @@ async fn main() -> Result<()> {
         p.is_dir().then_some(p)
     });
 
-    // Start the automations subsystem (filesystem-watched scripts +
-    // scheduler). Lives next to WORKFLOW.md as `automations/`. If startup
-    // fails (Node missing, dir unwriteable) we surface a warning but keep the
+    // Start the automations subsystem (filesystem-watched declarative TOML
+    // manifests + scheduler). Lives next to WORKFLOW.md as `automations/`. If
+    // startup fails (dir unwriteable) we surface a warning but keep the
     // daemon running — automations are optional.
     let automations_dir = wf_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.join("automations"))
         .unwrap_or_else(|| PathBuf::from("automations"));
-    let sdk_base = format!("http://127.0.0.1:{}/api/automations/sdk", port);
     let automations = match meridian_automations::AutomationsService::start(
         automations_dir.clone(),
-        sdk_base,
         store.clone(),
     )
     .await

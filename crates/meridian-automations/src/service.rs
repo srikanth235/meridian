@@ -1,5 +1,5 @@
-//! Top-level glue: install runtime assets, kick off the filesystem watcher,
-//! launch the scheduler, expose a clone-able handle for HTTP routes.
+//! Top-level glue: kick off the filesystem watcher, launch the scheduler,
+//! expose a clone-able handle for HTTP routes.
 
 use chrono::Utc;
 use notify::{recommended_watcher, Event, EventKind, RecursiveMode, Watcher};
@@ -11,14 +11,11 @@ use tracing::{info, warn};
 
 use meridian_store::{AutomationRecord, AutomationRunRecord, InboxEntryRecord, Store};
 
-use crate::assets::install_runtime;
 use crate::executor::execute;
 use crate::nl::{generate, GeneratedSpec};
 use crate::registry::{prune_missing, refresh};
-use crate::runtime::RuntimeInfo;
 use crate::scheduler::{self, SchedulerConfig, SchedulerEvent};
-use crate::sdk::{SdkRequest, SdkResponse, SdkSurface};
-use crate::tokens::{TokenContext, TokenStore};
+use crate::sdk::SdkSurface;
 
 #[derive(Clone)]
 pub struct AutomationsHandle {
@@ -28,11 +25,7 @@ pub struct AutomationsHandle {
 struct Inner {
     store: Arc<Store>,
     surface: SdkSurface,
-    tokens: TokenStore,
     automations_dir: PathBuf,
-    runner_path: PathBuf,
-    runtime: RuntimeInfo,
-    sdk_base: String,
     rescan_tx: mpsc::UnboundedSender<()>,
     events: broadcast::Sender<SchedulerEvent>,
 }
@@ -46,20 +39,12 @@ impl AutomationsHandle {
         self.inner.surface.clone()
     }
 
-    pub fn tokens(&self) -> TokenStore {
-        self.inner.tokens.clone()
-    }
-
     pub fn subscribe(&self) -> broadcast::Receiver<SchedulerEvent> {
         self.inner.events.subscribe()
     }
 
     pub fn automations_dir(&self) -> &Path {
         &self.inner.automations_dir
-    }
-
-    pub fn runtime(&self) -> &RuntimeInfo {
-        &self.inner.runtime
     }
 
     pub fn request_rescan(&self) {
@@ -114,8 +99,6 @@ impl AutomationsHandle {
         if row.running_since.is_some() {
             return Err("automation is already running".into());
         }
-        // Dry-runs don't claim the lock — the user can fire them concurrently
-        // with scheduled runs without blocking the next tick.
         if !dry_run {
             let claimed = self
                 .inner
@@ -138,14 +121,11 @@ impl AutomationsHandle {
         tokio::spawn(async move {
             let started = Utc::now();
             let (run_id, outcome) = execute(
-                &inner.runner_path,
                 &file,
                 &id_clone,
                 last_run_at,
                 dry_run,
-                &inner.runtime,
-                &inner.sdk_base,
-                &inner.tokens,
+                &inner.surface,
                 &inner.store,
             )
             .await;
@@ -205,9 +185,6 @@ impl AutomationsHandle {
                 success: outcome.success,
             });
         });
-        // Run id is allocated inside the spawn; for the synchronous return we
-        // hand back 0 — clients should poll list_runs to see history. (We
-        // could plumb through a oneshot but the UI already polls.)
         Ok(0)
     }
 
@@ -251,59 +228,39 @@ impl AutomationsHandle {
             .await
             .map_err(|e| e.to_string())
     }
-
-    pub async fn handle_sdk(
-        &self,
-        ctx: &TokenContext,
-        req: SdkRequest,
-    ) -> Result<SdkResponse, String> {
-        self.inner.surface.handle(ctx, req).await
-    }
 }
 
 pub struct AutomationsService;
 
 impl AutomationsService {
-    /// Boot the service. `automations_dir` defaults to
-    /// `<workflow_parent_dir>/automations/` if you pass that in. `sdk_base`
-    /// is the absolute URL the SDK should call back to (e.g.
-    /// `http://127.0.0.1:7878/api/automations/sdk`). The JS runtime is
-    /// auto-detected (Bun preferred, then Node 22.6+) — override with
-    /// `MERIDIAN_NODE_BIN`.
+    /// Boot the service. `automations_dir` is `<workflow_parent_dir>/automations/`.
+    /// Files are `*.toml` declarative manifests parsed in-process — no JS
+    /// runtime dependency.
     pub async fn start(
         automations_dir: PathBuf,
-        sdk_base: String,
         store: Arc<Store>,
     ) -> std::io::Result<AutomationsHandle> {
-        let layout = install_runtime(&automations_dir)?;
+        std::fs::create_dir_all(&automations_dir)?;
         info!(path = %automations_dir.display(), "automations dir ready");
 
-        let runtime = crate::runtime::detect().await;
-
-        let tokens = TokenStore::new();
         let surface = SdkSurface::new(store.clone());
         let (events_tx, _) = broadcast::channel(64);
         let (rescan_tx, mut rescan_rx) = mpsc::unbounded_channel::<()>();
 
         let inner = Arc::new(Inner {
             store: store.clone(),
-            surface,
-            tokens: tokens.clone(),
+            surface: surface.clone(),
             automations_dir: automations_dir.clone(),
-            runner_path: layout.runner.clone(),
-            runtime: runtime.clone(),
-            sdk_base: sdk_base.clone(),
             rescan_tx: rescan_tx.clone(),
             events: events_tx.clone(),
         });
 
         // Initial scan.
-        let initial_present = refresh(&automations_dir, &layout.runner, &runtime, &store).await;
+        let initial_present = refresh(&automations_dir, &store).await;
         prune_missing(&store, &initial_present).await;
 
         // Filesystem watcher: any change in the automations dir → trigger
-        // a debounced rescan via the channel. We watch non-recursively so
-        // edits to node_modules don't fire constantly.
+        // a debounced rescan. Non-recursive so unrelated subdirs are ignored.
         let watch_tx = rescan_tx.clone();
         let mut watcher = recommended_watcher(move |res: notify::Result<Event>| {
             if let Ok(ev) = res {
@@ -319,33 +276,22 @@ impl AutomationsService {
         watcher
             .watch(&automations_dir, RecursiveMode::NonRecursive)
             .map_err(io_err)?;
-        // Keep the watcher alive for the process lifetime.
         Box::leak(Box::new(watcher));
 
         // Rescan task: debounce events, run refresh + prune.
         let store_for_rescan = store.clone();
         let dir_for_rescan = automations_dir.clone();
-        let runner_for_rescan = layout.runner.clone();
-        let runtime_for_rescan = runtime.clone();
         let events_for_rescan = events_tx.clone();
         tokio::spawn(async move {
             loop {
                 match rescan_rx.recv().await {
                     None => return,
                     Some(()) => {
-                        // Debounce: drain any further messages within 250ms.
-                        let _ =
-                            tokio::time::timeout(Duration::from_millis(250), async {
-                                while rescan_rx.recv().await.is_some() {}
-                            })
-                            .await;
-                        let present = refresh(
-                            &dir_for_rescan,
-                            &runner_for_rescan,
-                            &runtime_for_rescan,
-                            &store_for_rescan,
-                        )
+                        let _ = tokio::time::timeout(Duration::from_millis(250), async {
+                            while rescan_rx.recv().await.is_some() {}
+                        })
                         .await;
+                        let present = refresh(&dir_for_rescan, &store_for_rescan).await;
                         prune_missing(&store_for_rescan, &present).await;
                         let _ = events_for_rescan.send(SchedulerEvent::RunFinished {
                             automation_id: String::new(),
@@ -359,15 +305,12 @@ impl AutomationsService {
 
         // Scheduler task.
         let cfg = SchedulerConfig {
-            runner_path: layout.runner.clone(),
-            runtime: runtime.clone(),
-            sdk_base: sdk_base.clone(),
+            surface: surface.clone(),
         };
         let store_for_sched = store.clone();
-        let tokens_for_sched = tokens.clone();
         let events_for_sched = events_tx.clone();
         tokio::spawn(async move {
-            scheduler::run(cfg, store_for_sched, tokens_for_sched, events_for_sched).await;
+            scheduler::run(cfg, store_for_sched, events_for_sched).await;
         });
 
         Ok(AutomationsHandle { inner })

@@ -1,13 +1,8 @@
 //! Generate the inbox-spec body shown to a coding harness when the user
 //! types a natural-language automation request.
 //!
-//! Critical: the spec must stand alone. We inline the SDK `.d.ts` (regenerated
-//! on every build via `include_str!`) and a worked example so the harness has
-//! everything it needs without "go read X" pointers. Keyword-matched trimming
-//! is in scope but trivial today (we always include the full SDK); we leave
-//! the function shape ready to specialize when the SDK grows.
-
-use crate::assets::sdk_index_dts;
+//! The spec must stand alone — it documents the entire TOML schema inline so
+//! the harness has everything it needs without "go read X" pointers.
 
 pub struct GeneratedSpec {
     pub slug: String,
@@ -53,57 +48,83 @@ fn slugify(nl: &str) -> String {
 }
 
 fn render_spec(nl: &str, slug: &str) -> String {
-    let dts = sdk_index_dts();
     format!(
         r#"[Automation request]
 
 User said: "{nl}"
 
-Write a TypeScript file at: automations/{slug}.ts
+Write a TOML file at: automations/{slug}.toml
 
-The file must default-export defineAutomation(). Do not run the script —
-symphony picks it up via filesystem watch when the file lands.
+The file is declarative — no scripting. The runtime parses it and runs:
+  fetch source → for each item, render template fields → dispatch action.
 
 ──────────────────────────────────────────────────────────────────────
-SDK (from "@symphony/automation"):
+Schema:
 
-{dts}
+  name      = string                       — human label shown in the UI
+  schedule  = {{ every = "1h" | "6h" | "1d" }}
+              | {{ cron  = "MIN HOUR DOM MONTH DOW" }}
+
+  [source]
+    kind                     = "github.issues" | "github.prs"
+    repos                    = ["owner/repo", ...]      # optional
+    state                    = "open" | "closed" | "any" # optional, default "open"
+    labels                   = ["label", ...]            # optional
+    assignee                 = "@me" | "<login>"         # optional
+    updated_since_last_run   = true | false              # optional
+                                                         # if true, GitHub
+                                                         # query is filtered
+                                                         # to items updated
+                                                         # since the previous
+                                                         # successful run
+
+  [action]
+    kind       = "inbox.create" | "tabs.open"
+    # template fields (Liquid syntax: `{{{{ item.<field> }}}}`):
+    #   inbox.create: title (req), body, url, tags = [...], dedup_key (req)
+    #   tabs.open:    url (req), title, dedup_key (req)
+
+Item fields available in templates:
+  item.title       string
+  item.url         string
+  item.repo        string  (e.g. "acme/api")
+  item.number      integer
+  item.author      string  (login)
+  item.labels      array of strings
+  item.updatedAt   ISO8601 string
+
+Other variables: {{{{ lastRunAt }}}}, {{{{ now }}}} (ISO8601 strings).
 
 ──────────────────────────────────────────────────────────────────────
 Example — "every hour, open new PRs from my org as tabs":
 
-  import {{ defineAutomation, symphony }} from "@symphony/automation";
+  name = "New PRs from acme"
+  schedule = {{ every = "1h" }}
 
-  export default defineAutomation({{
-    name: "New PRs from acme",
-    schedule: {{ every: "1h" }},
-    async run(ctx) {{
-      const prs = await symphony.github.prs({{
-        repos: ["acme/api", "acme/web"],
-        state: "open",
-        updatedSince: ctx.lastRunAt,
-      }});
-      for (const pr of prs) {{
-        await symphony.tabs.open({{
-          url: pr.url,
-          title: `${{pr.repo}}#${{pr.number}} ${{pr.title}}`,
-          dedupKey: pr.url,
-        }});
-      }}
-    }},
-  }});
+  [source]
+  kind = "github.prs"
+  repos = ["acme/api", "acme/web"]
+  state = "open"
+  updated_since_last_run = true
+
+  [action]
+  kind = "tabs.open"
+  url = "{{{{ item.url }}}}"
+  title = "{{{{ item.repo }}}}#{{{{ item.number }}}} {{{{ item.title }}}}"
+  dedup_key = "{{{{ item.url }}}}"
 
 ──────────────────────────────────────────────────────────────────────
 Rules:
 - Pick a sensible schedule from the user's phrasing
-  ("every morning" → {{ cron: "0 9 * * *" }}, "every hour" → {{ every: "1h" }}).
-- Always pass ctx.lastRunAt to updatedSince so reruns stay incremental.
-- Always set dedupKey, typically to the item's URL.
-- Don't add fields the user didn't ask for. No extra logging, no error
-  swallowing — if a fetch fails, let it throw; the runtime records it.
+  ("every morning" → {{ cron = "0 9 * * *" }}, "every hour" → {{ every = "1h" }}).
+- Set updated_since_last_run = true unless the user explicitly wants a full
+  scan every time.
+- Always set dedup_key, typically to {{{{ item.url }}}}.
+- Don't add fields the user didn't ask for — this is declarative; there's no
+  escape hatch. If the request needs custom logic the schema can't express,
+  reply in the inbox saying so.
 "#,
         nl = nl.replace('"', "\\\""),
         slug = slug,
-        dts = dts,
     )
 }
