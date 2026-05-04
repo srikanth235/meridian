@@ -9,6 +9,7 @@ use axum::{
     Json, Router,
 };
 use meridian_automations::AutomationsHandle;
+use meridian_pages::PagesHandle;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -28,6 +29,7 @@ struct AppState {
     workflow: ReloadHandle,
     user_cache: Arc<Mutex<Option<(Instant, serde_json::Value)>>>,
     automations: Option<AutomationsHandle>,
+    pages: Option<PagesHandle>,
 }
 
 pub async fn serve(
@@ -36,12 +38,14 @@ pub async fn serve(
     workflow: ReloadHandle,
     static_dir: Option<PathBuf>,
     automations: Option<AutomationsHandle>,
+    pages: Option<PagesHandle>,
 ) -> std::io::Result<()> {
     let state = AppState {
         orch,
         workflow,
         user_cache: Arc::new(Mutex::new(None)),
         automations,
+        pages,
     };
 
     let api = Router::new()
@@ -66,6 +70,14 @@ pub async fn serve(
         .route("/inbox", get(get_inbox))
         .route("/inbox/:id", get(get_inbox_one))
         .route("/inbox/:id/dismiss", post(post_inbox_dismiss))
+        .route("/pages", get(get_pages))
+        .route("/pages/request", post(post_page_request))
+        .route("/pages/write", post(post_page_write))
+        .route("/pages/:slug", get(get_page))
+        .route("/pages/:slug/source", get(get_page_source))
+        .route("/pages/:slug/query", post(post_page_query))
+        .route("/pages/:slug/fix", post(post_page_fix))
+        .route("/sql/query", post(post_sql_query))
         .route("/ws", get(ws_upgrade));
 
     let mut app = Router::new()
@@ -503,6 +515,276 @@ async fn post_inbox_dismiss(
     };
     match h.dismiss_inbox(&id).await {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+// ============================================================================
+// Pages endpoints
+// ============================================================================
+
+const PAGES_QUERY_MAX_ROWS: usize = 10_000;
+const PAGES_QUERY_TIMEOUT_MS: u64 = 5_000;
+
+fn pages(state: &AppState) -> Result<&PagesHandle, (StatusCode, Json<serde_json::Value>)> {
+    state.pages.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pages subsystem not initialized"})),
+        )
+    })
+}
+
+async fn get_pages(State(s): State<AppState>) -> impl IntoResponse {
+    match pages(&s) {
+        Err(r) => r.into_response(),
+        Ok(h) => {
+            let rows = h.list().await;
+            let requests = h.list_inbox_requests().await;
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"pages": rows, "requests": requests})),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_page(
+    State(s): State<AppState>,
+    Path(slug): Path<String>,
+) -> impl IntoResponse {
+    let Ok(h) = pages(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pages not ready"})),
+        )
+            .into_response();
+    };
+    let Some(row) = h.get(&slug).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response();
+    };
+    let source = h.read_source(&slug).await;
+    h.touch_opened(&slug).await;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"page": row, "source": source})),
+    )
+        .into_response()
+}
+
+async fn get_page_source(
+    State(s): State<AppState>,
+    Path(slug): Path<String>,
+) -> impl IntoResponse {
+    let Ok(h) = pages(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pages not ready".to_string(),
+        )
+            .into_response();
+    };
+    match h.read_source(&slug).await {
+        Some(src) => (
+            StatusCode::OK,
+            [("content-type", "text/plain; charset=utf-8")],
+            src,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "no source for slug".to_string()).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PageQueryBody {
+    sql: String,
+    #[serde(default)]
+    params: Vec<serde_json::Value>,
+}
+
+async fn post_page_query(
+    State(s): State<AppState>,
+    Path(slug): Path<String>,
+    Json(body): Json<PageQueryBody>,
+) -> impl IntoResponse {
+    let Ok(h) = pages(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pages not ready"})),
+        )
+            .into_response();
+    };
+    match h
+        .query(
+            &slug,
+            body.sql,
+            body.params,
+            PAGES_QUERY_MAX_ROWS,
+            PAGES_QUERY_TIMEOUT_MS,
+        )
+        .await
+    {
+        Ok(r) => (StatusCode::OK, Json(serde_json::to_value(r).unwrap_or_default()))
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PageRequestBody {
+    nl: String,
+}
+
+async fn post_page_request(
+    State(s): State<AppState>,
+    Json(body): Json<PageRequestBody>,
+) -> impl IntoResponse {
+    let Ok(h) = pages(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pages not ready"})),
+        )
+            .into_response();
+    };
+    let nl = body.nl.trim();
+    if nl.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "nl is empty"})),
+        )
+            .into_response();
+    }
+    match h.submit_request(nl).await {
+        Ok((id, spec)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "inbox_entry_id": id,
+                "slug": spec.slug,
+                "title": spec.title,
+                "body": spec.body,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PageFixBody {
+    error: String,
+}
+
+async fn post_page_fix(
+    State(s): State<AppState>,
+    Path(slug): Path<String>,
+    Json(body): Json<PageFixBody>,
+) -> impl IntoResponse {
+    let Ok(h) = pages(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pages not ready"})),
+        )
+            .into_response();
+    };
+    match h.submit_fix_request(&slug, &body.error).await {
+        Ok((id, spec)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "inbox_entry_id": id,
+                "slug": spec.slug,
+                "title": spec.title,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PageWriteBody {
+    slug: String,
+    page_tsx: String,
+    meta_toml: String,
+}
+
+async fn post_page_write(
+    State(s): State<AppState>,
+    Json(body): Json<PageWriteBody>,
+) -> impl IntoResponse {
+    let Ok(h) = pages(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pages not ready"})),
+        )
+            .into_response();
+    };
+    match h.write_page(&body.slug, &body.page_tsx, &body.meta_toml).await {
+        Ok(row) => (StatusCode::OK, Json(serde_json::json!({"page": row}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+// ============================================================================
+// Generic read-only SQL endpoint (chat tool surface)
+// ============================================================================
+
+#[derive(serde::Deserialize)]
+struct SqlQueryBody {
+    sql: String,
+    #[serde(default)]
+    params: Vec<serde_json::Value>,
+}
+
+async fn post_sql_query(
+    State(s): State<AppState>,
+    Json(body): Json<SqlQueryBody>,
+) -> impl IntoResponse {
+    // Reuse the pages handle's read-only path. The handle is just a thin
+    // wrapper around `Store::read_only_query`; the chat-side caller doesn't
+    // need a slug.
+    let Ok(h) = pages(&s) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pages not ready"})),
+        )
+            .into_response();
+    };
+    match h
+        .query(
+            "_chat",
+            body.sql,
+            body.params,
+            PAGES_QUERY_MAX_ROWS,
+            PAGES_QUERY_TIMEOUT_MS,
+        )
+        .await
+    {
+        Ok(r) => (StatusCode::OK, Json(serde_json::to_value(r).unwrap_or_default()))
+            .into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": e})),

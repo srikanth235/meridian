@@ -23,7 +23,7 @@ pub use error::StoreError;
 pub use models::{
     Attachment, AutomationRecord, AutomationRunRecord, Comment, Cycle, HarnessRecord,
     InboxEntryRecord, IssueRecord, IssueRelation, IssueRelationType, Label, LiveSessionRecord,
-    NewIssue, Project, ProjectState, RepoRecord, RetryEntryRecord, RunAttemptRecord,
+    NewIssue, PageRecord, Project, ProjectState, RepoRecord, RetryEntryRecord, RunAttemptRecord,
     RunAttemptStatus, SessionEventRecord, Team, User, Workspace, WorkflowState, WorkflowStateType,
 };
-pub use store::Store;
+pub use store::{ReadOnlyQueryResult, Store};

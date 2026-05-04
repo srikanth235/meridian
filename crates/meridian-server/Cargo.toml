@@ -10,6 +10,7 @@ meridian-config.workspace = true
 meridian-orchestrator.workspace = true
 meridian-tracker.workspace = true
 meridian-automations.workspace = true
+meridian-pages.workspace = true
 meridian-store.workspace = true
 axum.workspace = true
 tower.workspace = true

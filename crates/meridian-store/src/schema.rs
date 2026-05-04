@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use crate::error::StoreError;
 
 /// Bumped whenever a migration is appended below.
-pub const CURRENT_VERSION: u32 = 4;
+pub const CURRENT_VERSION: u32 = 5;
 
 /// All migrations, in order. Append-only.
 pub const MIGRATIONS: &[(u32, &str)] = &[
@@ -16,6 +16,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (2, MIGRATION_002_ISSUE_KIND),
     (3, MIGRATION_003_HARNESS_AND_REPO),
     (4, MIGRATION_004_AUTOMATIONS),
+    (5, MIGRATION_005_PAGES),
 ];
 
 pub fn apply_all(conn: &mut Connection) -> Result<(), StoreError> {
@@ -458,4 +459,25 @@ CREATE INDEX idx_inbox_entry_kind    ON inbox_entry(kind, created_at DESC);
 CREATE UNIQUE INDEX idx_inbox_entry_dedup
     ON inbox_entry(source, dedup_key)
     WHERE source IS NOT NULL AND dedup_key IS NOT NULL;
+"#;
+
+/// Pages: filesystem-watched LLM-authored TSX modules under
+/// `<workflow_dir>/pages/<slug>/{page.tsx,meta.toml}`. The slug (folder name)
+/// is the immutable identity; the title is mutable. The registry is a thin
+/// shadow of disk — disk is the source of truth, just like automations.
+const MIGRATION_005_PAGES: &str = r#"
+CREATE TABLE page (
+    slug          TEXT PRIMARY KEY,
+    folder_path   TEXT NOT NULL UNIQUE,
+    title         TEXT NOT NULL,
+    icon          TEXT,
+    position      INTEGER NOT NULL DEFAULT 100,
+    meta_version  INTEGER NOT NULL DEFAULT 1,
+    parse_error   TEXT,
+    last_error    TEXT,
+    last_opened_at TEXT,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX idx_page_position ON page(position, title);
 "#;
