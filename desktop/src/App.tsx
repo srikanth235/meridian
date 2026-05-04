@@ -6,11 +6,13 @@ import {
   IconActivity,
   IconAutomation,
   IconBranch,
+  IconChat,
   IconChevronDown,
   IconInbox,
   IconLive,
   IconLogo,
   IconMoon,
+  IconPages,
   IconPause,
   IconPlay,
   IconRepos,
@@ -29,15 +31,22 @@ import { Harnesses } from "./screens/Harnesses";
 import { Repos } from "./screens/Repos";
 import { Routing } from "./screens/Routing";
 import { Automations } from "./screens/Automations";
+import { Pages } from "./screens/Pages";
+import { PageView } from "./screens/PageView";
 import { ActivityPanel } from "./screens/ActivityPanel";
 import { IssueDetail } from "./screens/IssueDetail";
+import { ChatSidebar } from "./chat/ChatSidebar";
 import { inboxIssues } from "./symphonyMap";
+
+const CHAT_OPEN_KEY = "meridian.chatOpen";
 
 type Route =
   | { name: "inbox" }
   | { name: "tasks" }
   | { name: "live" }
   | { name: "automations" }
+  | { name: "pages" }
+  | { name: "page"; slug: string }
   | { name: "harnesses" }
   | { name: "repos" }
   | { name: "routing" }
@@ -108,6 +117,9 @@ export function App() {
   const [route, setRoute] = useState<Route>({ name: "inbox" });
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState<boolean>(() =>
+    loadJson<boolean>(CHAT_OPEN_KEY, false),
+  );
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = typeof localStorage !== "undefined" ? localStorage.getItem(THEME_KEY) : null;
     return stored === "light" ? "light" : "dark";
@@ -128,6 +140,7 @@ export function App() {
   useEffect(() => { applyTheme(theme); try { localStorage.setItem(THEME_KEY, theme); } catch {} }, [theme]);
   useEffect(() => { saveJson(REPO_FILTER_KEY, repoFilter); }, [repoFilter]);
   useEffect(() => { saveJson(OVERRIDES_KEY, overrides); }, [overrides]);
+  useEffect(() => { saveJson(CHAT_OPEN_KEY, chatOpen); }, [chatOpen]);
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
 
@@ -138,12 +151,15 @@ export function App() {
     return () => clearInterval(id);
   }, []);
 
-  // ⌘K palette
+  // ⌘K palette · ⌘\ chat sidebar
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setPaletteOpen((p) => !p);
+      } else if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+        e.preventDefault();
+        setChatOpen((c) => !c);
       } else if (e.key === "Escape") {
         setPaletteOpen(false);
       }
@@ -208,6 +224,8 @@ export function App() {
         repoFilter={repoFilter}
         setRepoFilter={setRepoFilter}
         onOpenActivity={() => setActivityOpen(true)}
+        chatOpen={chatOpen}
+        onToggleChat={() => setChatOpen((c) => !c)}
       />
       <div className="flex-1 flex min-h-0">
         <Sidebar
@@ -259,6 +277,18 @@ export function App() {
               query={search.automations ?? ""}
               onQueryChange={(q) => setPageQuery("automations", q)}
             />
+          ) : route.name === "pages" ? (
+            <Pages
+              density="comfortable"
+              query={search.pages ?? ""}
+              onQueryChange={(q) => setPageQuery("pages", q)}
+              onOpenPage={(slug) => setRoute({ name: "page", slug })}
+            />
+          ) : route.name === "page" ? (
+            <PageView
+              slug={route.slug}
+              onBack={() => setRoute({ name: "pages" })}
+            />
           ) : route.name === "harnesses" ? (
             <Harnesses
               snapshot={snapshot}
@@ -291,6 +321,7 @@ export function App() {
             </div>
           )}
         </main>
+        {chatOpen && <ChatSidebar onClose={() => setChatOpen(false)} />}
       </div>
 
       {paletteOpen && snapshot && (
@@ -367,6 +398,8 @@ function Titlebar({
   repoFilter,
   setRepoFilter,
   onOpenActivity,
+  chatOpen,
+  onToggleChat,
 }: {
   conn: ConnState;
   snapshot: Snapshot | null;
@@ -375,12 +408,27 @@ function Titlebar({
   repoFilter: string | null;
   setRepoFilter: (s: string | null) => void;
   onOpenActivity: () => void;
+  chatOpen: boolean;
+  onToggleChat: () => void;
 }) {
   return (
     <header className="shrink-0 app-drag bg-chrome border-b border-border" style={{ height: 38 }}>
       <div className="pl-24 pr-3.5 h-full flex items-center gap-3">
         <RepoPicker snapshot={snapshot} repoFilter={repoFilter} setRepoFilter={setRepoFilter} />
         <div className="flex-1" />
+        <button
+          onClick={onToggleChat}
+          title={chatOpen ? "Close chat (⌘\\)" : "Open chat (⌘\\)"}
+          aria-label="Toggle chat"
+          className="inline-flex items-center justify-center h-6 w-6 rounded-md cursor-pointer"
+          style={{
+            background: chatOpen ? "var(--panel3)" : "transparent",
+            color: chatOpen ? "var(--text)" : "var(--textDim)",
+            border: "1px solid var(--border)",
+          }}
+        >
+          <IconChat size={12} />
+        </button>
         <button
           onClick={onOpenActivity}
           title="Activity"
@@ -567,6 +615,7 @@ function Sidebar({
     { id: "tasks", label: "Tasks", icon: IconTasks, matchAlso: ["issue"] },
     { id: "live", label: "Live", icon: IconLive, badge: liveCount > 0 ? liveCount : null },
     { id: "automations", label: "Automations", icon: IconAutomation },
+    { id: "pages", label: "Pages", icon: IconPages, matchAlso: ["page"] },
   ];
   const team: NavItem[] = [
     { id: "harnesses", label: "Harnesses", icon: IconTeam, badge: harnesses.length || null },
@@ -777,6 +826,7 @@ function CommandPalette({
     { id: "go-tasks",     label: "Go to Tasks",     kind: "Navigate", icon: IconTasks,    run: () => setRoute({ name: "tasks" }) },
     { id: "go-live",      label: "Go to Live",      kind: "Navigate", icon: IconLive,     run: () => setRoute({ name: "live" }) },
     { id: "go-automations", label: "Go to Automations", kind: "Navigate", icon: IconAutomation, run: () => setRoute({ name: "automations" }) },
+    { id: "go-pages", label: "Go to Pages", kind: "Navigate", icon: IconPages, run: () => setRoute({ name: "pages" }) },
     { id: "go-harnesses", label: "Go to Harnesses", kind: "Navigate", icon: IconTeam,     run: () => setRoute({ name: "harnesses" }) },
     { id: "go-repos",     label: "Go to Repos",     kind: "Navigate", icon: IconRepos,    run: () => setRoute({ name: "repos" }) },
     { id: "go-routing",   label: "Go to Routing",   kind: "Navigate", icon: IconWorkflow, run: () => setRoute({ name: "routing" }) },

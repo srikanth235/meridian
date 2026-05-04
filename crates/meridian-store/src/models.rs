@@ -455,6 +455,25 @@ pub struct InboxEntryRecord {
     pub created_at: DateTime<Utc>,
 }
 
+/// One LLM-authored page discovered under `<workflow_dir>/pages/<slug>/`.
+/// The `slug` (folder name) is the immutable identity; `title` and other
+/// `meta.toml` fields are mutable. The registry mirrors disk; disk is the
+/// source of truth.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageRecord {
+    pub slug: String,
+    pub folder_path: String,
+    pub title: String,
+    pub icon: Option<String>,
+    pub position: i64,
+    pub meta_version: i64,
+    pub parse_error: Option<String>,
+    pub last_error: Option<String>,
+    pub last_opened_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// One GitHub repo discoverable via `gh repo list`. `connected` is the user
 /// toggle that gates whether the orchestrator dispatches against this repo;
 /// it's preserved across refreshes (we never clobber it from `gh` data).

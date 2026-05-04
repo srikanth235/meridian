@@ -12,10 +12,20 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@babel/standalone": "^7.29.3",
+    "@mariozechner/mini-lit": "^0.2.1",
+    "@mariozechner/pi-agent-core": "^0.72.1",
+    "@mariozechner/pi-ai": "^0.72.1",
+    "@mariozechner/pi-web-ui": "^0.72.1",
+    "date-fns": "^4.1.0",
+    "lit": "^3.3.2",
+    "lucide": "^1.14.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "recharts": "^3.8.1"
   },
   "devDependencies": {
+    "@types/babel__standalone": "^7.1.9",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

@@ -1490,6 +1490,269 @@ impl Store {
         })
         .await
     }
+
+    // -------------------- Pages --------------------
+
+    /// Insert (or update by slug) a page row freshly parsed from disk.
+    /// `parse_error` is set on bad meta.toml; the row still upserts so the
+    /// UI can surface the error.
+    pub async fn upsert_page(
+        &self,
+        slug: &str,
+        folder_path: &str,
+        title: &str,
+        icon: Option<&str>,
+        position: i64,
+        meta_version: i64,
+        parse_error: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let slug = slug.to_string();
+        let folder_path = folder_path.to_string();
+        let title = title.to_string();
+        let icon = icon.map(|s| s.to_string());
+        let parse_error = parse_error.map(|s| s.to_string());
+        self.run(move |conn| {
+            conn.execute(
+                "INSERT INTO page (slug, folder_path, title, icon, position,
+                                   meta_version, parse_error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(slug) DO UPDATE SET
+                    folder_path  = excluded.folder_path,
+                    title        = excluded.title,
+                    icon         = excluded.icon,
+                    position     = excluded.position,
+                    meta_version = excluded.meta_version,
+                    parse_error  = excluded.parse_error,
+                    updated_at   = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+                rusqlite::params![
+                    slug,
+                    folder_path,
+                    title,
+                    icon,
+                    position,
+                    meta_version,
+                    parse_error,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn list_pages(&self) -> Result<Vec<crate::models::PageRecord>, StoreError> {
+        self.run(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT slug, folder_path, title, icon, position, meta_version,
+                        parse_error, last_error, last_opened_at, created_at, updated_at
+                 FROM page ORDER BY position ASC, title ASC",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(crate::models::PageRecord {
+                        slug: row.get(0)?,
+                        folder_path: row.get(1)?,
+                        title: row.get(2)?,
+                        icon: row.get(3)?,
+                        position: row.get(4)?,
+                        meta_version: row.get(5)?,
+                        parse_error: row.get(6)?,
+                        last_error: row.get(7)?,
+                        last_opened_at: row.get(8)?,
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn get_page(
+        &self,
+        slug: &str,
+    ) -> Result<Option<crate::models::PageRecord>, StoreError> {
+        let slug = slug.to_string();
+        self.run(move |conn| {
+            let row = conn
+                .query_row(
+                    "SELECT slug, folder_path, title, icon, position, meta_version,
+                            parse_error, last_error, last_opened_at, created_at, updated_at
+                     FROM page WHERE slug = ?1",
+                    [slug],
+                    |row| {
+                        Ok(crate::models::PageRecord {
+                            slug: row.get(0)?,
+                            folder_path: row.get(1)?,
+                            title: row.get(2)?,
+                            icon: row.get(3)?,
+                            position: row.get(4)?,
+                            meta_version: row.get(5)?,
+                            parse_error: row.get(6)?,
+                            last_error: row.get(7)?,
+                            last_opened_at: row.get(8)?,
+                            created_at: row.get(9)?,
+                            updated_at: row.get(10)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+        .await
+    }
+
+    pub async fn delete_page(&self, slug: &str) -> Result<(), StoreError> {
+        let slug = slug.to_string();
+        self.run(move |conn| {
+            conn.execute("DELETE FROM page WHERE slug = ?1", [slug])?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn touch_page_opened(&self, slug: &str) -> Result<(), StoreError> {
+        let slug = slug.to_string();
+        self.run(move |conn| {
+            conn.execute(
+                "UPDATE page SET last_opened_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 WHERE slug = ?1",
+                [slug],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Run a read-only query against the same SQLite file backing this store.
+    /// Opens a fresh connection in `OpenFlags::SQLITE_OPEN_READ_ONLY` mode so
+    /// the LLM-authored page literally cannot mutate state. Caller-supplied
+    /// SQL goes straight in; bind params are positional `?N`.
+    ///
+    /// Enforces:
+    /// - row cap (`max_rows`); excess rows are dropped and `truncated=true`
+    /// - per-statement busy timeout (`timeout_ms`)
+    /// - rejects PRAGMA-write or schema-changing statements at the SQL level
+    ///   (read-only flag also catches it, but we return a friendlier error)
+    pub async fn read_only_query(
+        &self,
+        sql: String,
+        params: Vec<serde_json::Value>,
+        max_rows: usize,
+        timeout_ms: u64,
+    ) -> Result<ReadOnlyQueryResult, StoreError> {
+        if self.path.as_os_str() == ":memory:" {
+            // In-memory stores can't be reopened from another connection; fall
+            // back to using the existing locked connection in read mode.
+            return self
+                .run(move |conn| run_readonly_inner(conn, &sql, &params, max_rows, timeout_ms))
+                .await;
+        }
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || -> Result<ReadOnlyQueryResult, StoreError> {
+            let conn = rusqlite::Connection::open_with_flags(
+                &path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                    | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            )
+            .map_err(|e| StoreError::Open(e.to_string()))?;
+            run_readonly_inner(&conn, &sql, &params, max_rows, timeout_ms)
+        })
+        .await
+        .map_err(|e| StoreError::Join(e.to_string()))?
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReadOnlyQueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+    pub truncated: bool,
+}
+
+fn run_readonly_inner(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: &[serde_json::Value],
+    max_rows: usize,
+    timeout_ms: u64,
+) -> Result<ReadOnlyQueryResult, StoreError> {
+    if !is_pure_select(sql) {
+        return Err(StoreError::Migration {
+            version: 0,
+            source: rusqlite::Error::InvalidQuery,
+        });
+    }
+    conn.busy_timeout(std::time::Duration::from_millis(timeout_ms))
+        .ok();
+    let mut stmt = conn.prepare(sql).map_err(|e| StoreError::Open(e.to_string()))?;
+    let bound: Vec<rusqlite::types::Value> = params.iter().map(json_to_sql).collect();
+    let columns: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
+    let col_count = columns.len();
+    let mut rows = Vec::new();
+    let mut truncated = false;
+    let mut q = stmt
+        .query(rusqlite::params_from_iter(bound.iter()))
+        .map_err(|e| StoreError::Open(e.to_string()))?;
+    while let Some(row) = q.next().map_err(|e| StoreError::Open(e.to_string()))? {
+        if rows.len() >= max_rows {
+            truncated = true;
+            break;
+        }
+        let mut out_row = Vec::with_capacity(col_count);
+        for i in 0..col_count {
+            let v: rusqlite::types::Value = row
+                .get_ref(i)
+                .map_err(|e| StoreError::Open(e.to_string()))?
+                .into();
+            out_row.push(sql_to_json(v));
+        }
+        rows.push(out_row);
+    }
+    Ok(ReadOnlyQueryResult { columns, rows, truncated })
+}
+
+/// Cheap SQL guard: allow only statements whose first non-whitespace token
+/// is `SELECT` or `WITH`. The read-only connection flag already prevents
+/// writes, but rejecting up-front gives nicer errors and keeps PRAGMA out.
+fn is_pure_select(sql: &str) -> bool {
+    let trimmed = sql.trim_start();
+    let lower: String = trimmed.chars().take(8).flat_map(|c| c.to_lowercase()).collect();
+    lower.starts_with("select") || lower.starts_with("with")
+}
+
+fn json_to_sql(v: &serde_json::Value) -> rusqlite::types::Value {
+    use rusqlite::types::Value as V;
+    match v {
+        serde_json::Value::Null => V::Null,
+        serde_json::Value::Bool(b) => V::Integer(if *b { 1 } else { 0 }),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                V::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                V::Real(f)
+            } else {
+                V::Text(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => V::Text(s.clone()),
+        other => V::Text(other.to_string()),
+    }
+}
+
+fn sql_to_json(v: rusqlite::types::Value) -> serde_json::Value {
+    use rusqlite::types::Value as V;
+    match v {
+        V::Null => serde_json::Value::Null,
+        V::Integer(i) => serde_json::Value::from(i),
+        V::Real(f) => serde_json::Value::from(f),
+        V::Text(s) => serde_json::Value::from(s),
+        V::Blob(b) => {
+            // Pages aren't expected to query blobs; return a placeholder.
+            serde_json::Value::from(format!("<blob:{}>", b.len()))
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2108,5 +2371,82 @@ mod tests {
         s.finish_run_attempt(&run.id, RunAttemptStatus::Succeeded, None)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn page_upsert_and_list() {
+        let s = fixture().await;
+        s.upsert_page("welcome", "/tmp/x/welcome", "Welcome", Some("table"), 0, 1, None)
+            .await
+            .unwrap();
+        s.upsert_page("sales", "/tmp/x/sales", "Sales", None, 10, 1, None)
+            .await
+            .unwrap();
+        let rows = s.list_pages().await.unwrap();
+        // Sorted by position ASC then title — "welcome" (pos 0) precedes
+        // "sales" (pos 10).
+        assert_eq!(rows[0].slug, "welcome");
+        assert_eq!(rows[1].slug, "sales");
+        assert!(s.get_page("welcome").await.unwrap().is_some());
+        s.delete_page("welcome").await.unwrap();
+        assert!(s.get_page("welcome").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn read_only_query_rejects_writes_and_pragmas() {
+        let s = fixture().await;
+        // Pragma / write attempts must be rejected before they can mutate.
+        for sql in [
+            "PRAGMA journal_mode = OFF",
+            "INSERT INTO page (slug, folder_path, title) VALUES ('x','/x','x')",
+            "UPDATE page SET title='y'",
+            "DELETE FROM page",
+            "DROP TABLE page",
+            "ATTACH DATABASE ':memory:' AS evil",
+        ] {
+            let r = s.read_only_query(sql.to_string(), vec![], 100, 1000).await;
+            assert!(r.is_err(), "expected error for {sql}");
+        }
+    }
+
+    #[tokio::test]
+    async fn read_only_query_returns_select_rows_with_truncation() {
+        let s = fixture().await;
+        for i in 0..5 {
+            s.upsert_page(
+                &format!("p{i}"),
+                &format!("/tmp/p{i}"),
+                &format!("Title {i}"),
+                None,
+                i,
+                1,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let r = s
+            .read_only_query(
+                "SELECT slug, title FROM page ORDER BY position".into(),
+                vec![],
+                3,
+                1000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.columns, vec!["slug".to_string(), "title".to_string()]);
+        assert_eq!(r.rows.len(), 3);
+        assert!(r.truncated, "row cap should clamp results");
+
+        let r = s
+            .read_only_query(
+                "WITH x AS (SELECT 1 AS n) SELECT * FROM x".into(),
+                vec![],
+                10,
+                1000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.rows[0][0].as_i64(), Some(1));
     }
 }

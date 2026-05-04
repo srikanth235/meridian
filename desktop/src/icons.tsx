@@ -237,3 +237,19 @@ export function IconAutomation({ size = 14, ...rest }: IconProps) {
     </svg>
   );
 }
+export function IconChat({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="M21 12a8 8 0 0 1-8 8H5l-2 3V8a8 8 0 0 1 8-8h0a8 8 0 0 1 10 4z" />
+    </svg>
+  );
+}
+export function IconPages({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M3 9h18" />
+      <path d="M9 21V9" />
+    </svg>
+  );
+}

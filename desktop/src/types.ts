@@ -194,3 +194,24 @@ export interface InboxEntry {
   dismissed_at: string | null;
   created_at: string;
 }
+
+// ---------------- Pages ----------------
+
+export interface Page {
+  slug: string;
+  folder_path: string;
+  title: string;
+  icon: string | null;
+  position: number;
+  meta_version: number;
+  parse_error: string | null;
+  last_error: string | null;
+  last_opened_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PagesResponse {
+  pages: Page[];
+  requests: InboxEntry[];
+}

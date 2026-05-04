@@ -99,13 +99,39 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Start the pages subsystem (filesystem-watched LLM-authored TSX
+    // modules). Lives next to WORKFLOW.md as `pages/`. Like automations, we
+    // surface a warning but keep running if startup fails.
+    let pages_dir = wf_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.join("pages"))
+        .unwrap_or_else(|| PathBuf::from("pages"));
+    let pages = match meridian_pages::PagesService::start(pages_dir.clone(), store.clone()).await {
+        Ok(h) => {
+            info!(path = %pages_dir.display(), "pages subsystem started");
+            Some(h)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to start pages subsystem; feature disabled");
+            None
+        }
+    };
+
     let server_handle = handle.clone();
     let server_workflow = workflow.clone();
     let server_auto = automations.clone();
+    let server_pages = pages.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            meridian_server::serve(addr, server_handle, server_workflow, static_dir, server_auto)
-                .await
+        if let Err(e) = meridian_server::serve(
+            addr,
+            server_handle,
+            server_workflow,
+            static_dir,
+            server_auto,
+            server_pages,
+        )
+        .await
         {
             tracing::error!(error = %e, "http server crashed");
         }
